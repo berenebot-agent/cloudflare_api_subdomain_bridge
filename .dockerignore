@@ -1,0 +1,6 @@
+data
+.env
+.git
+*.zip
+bridge
+.DS_Store

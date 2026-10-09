@@ -1,0 +1,1284 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cloudflare Subdomain Bridge",
+    "version": "1.0.0-alpha",
+    "description": "Self-hosted, API-only Cloudflare subdomain permissions bridge. Credentials and scopes are env-only. Do not expose unauthenticated over public HTTP. See README for limits."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "tags": [
+    {
+      "name": "System"
+    },
+    {
+      "name": "DNS"
+    },
+    {
+      "name": "Tunnels"
+    },
+    {
+      "name": "Workers"
+    },
+    {
+      "name": "Email"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "API key"
+      }
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Process health check",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "summary": "Authenticated client scope and capabilities",
+        "tags": [
+          "System"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/dns": {
+      "get": {
+        "summary": "List DNS records under client scope",
+        "tags": [
+          "DNS"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create scoped DNS record",
+        "tags": [
+          "DNS"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "ttl": {
+                    "type": "integer"
+                  },
+                  "proxied": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "type",
+                  "content",
+                  "ttl",
+                  "proxied"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "name": "app.hermes.example.com",
+          "type": "A",
+          "content": "198.51.100.10",
+          "ttl": 1,
+          "proxied": false
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/dns/{id}": {
+      "get": {
+        "summary": "Read DNS record after current-name scope check",
+        "tags": [
+          "DNS"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "patch": {
+        "summary": "Replace DNS record; old and new names checked",
+        "tags": [
+          "DNS"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "content": {
+                    "type": "string"
+                  },
+                  "ttl": {
+                    "type": "integer"
+                  },
+                  "proxied": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "name",
+                  "type",
+                  "content",
+                  "ttl",
+                  "proxied"
+                ]
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete scoped DNS record",
+        "tags": [
+          "DNS"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tunnels": {
+      "get": {
+        "summary": "List tunnels created by this bridge for client",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create remotely managed dedicated tunnel",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "name": "backend"
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tunnels/{id}": {
+      "get": {
+        "summary": "Read owned tunnel information",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete empty owned tunnel",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tunnels/{id}/token": {
+      "get": {
+        "summary": "Retrieve connector token for owned tunnel; sensitive",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tunnels/{id}/hostnames": {
+      "get": {
+        "summary": "List managed ingress hostnames on tunnel",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Publish scoped hostname; create proxied CNAME and ingress",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "hostname": {
+                    "type": "string"
+                  },
+                  "service": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hostname",
+                  "service"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "hostname": "app.hermes.example.com",
+          "service": "http://localhost:8080"
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tunnels/{id}/hostnames/{hostname}": {
+      "delete": {
+        "summary": "Unpublish hostname and managed DNS record",
+        "tags": [
+          "Tunnels"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "hostname",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workers": {
+      "get": {
+        "summary": "List owned Workers",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Upload module Worker without external bindings; public worker subdomain disabled",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "script": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "label",
+                  "script"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "label": "hello",
+          "script": "export default {async fetch(){return new Response(\"ok\")}}"
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workers/{id}": {
+      "put": {
+        "summary": "Replace script of owned Worker",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "script": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "script"
+                ]
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Delete owned Worker after routes removed",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workers/{id}/routes": {
+      "post": {
+        "summary": "Create scoped host-only Worker route",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "hostname": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "hostname"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "hostname": "service.hermes.example.com"
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workers/routes": {
+      "get": {
+        "summary": "List owned Worker routes",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/workers/routes/{id}": {
+      "delete": {
+        "summary": "Delete owned Worker route after drift check",
+        "tags": [
+          "Workers"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/email": {
+      "get": {
+        "summary": "List owned literal-address Email Routing rules",
+        "tags": [
+          "Email"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create literal-address forward, drop or owned Worker rule",
+        "tags": [
+          "Email"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "address": {
+                    "type": "string"
+                  },
+                  "action": {
+                    "type": "string"
+                  },
+                  "destination": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "address",
+                  "action",
+                  "destination"
+                ]
+              }
+            }
+          }
+        },
+        "x-example": {
+          "address": "support@hermes.example.com",
+          "action": "forward",
+          "destination": "verified@example.net"
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/email/{id}": {
+      "delete": {
+        "summary": "Delete owned email rule after drift check",
+        "tags": [
+          "Email"
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Invalid or missing Bearer key"
+          },
+          "403": {
+            "description": "Outside scope or feature not granted"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
+          "502": {
+            "description": "Upstream or storage operation failed"
+          }
+        },
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    }
+  }
+}
