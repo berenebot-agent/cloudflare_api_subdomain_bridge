@@ -44,46 +44,110 @@ func ingress(hosts []TunnelHost) map[string]any {
 	items = append(items, map[string]any{"service": "http_status:404"})
 	return map[string]any{"config": map[string]any{"ingress": items}}
 }
-func (s *Server) verifyTunnelConfig(r *http.Request, c Client, id string, hosts []TunnelHost) error {
+
+// hostsInScope fails when any of the tunnel's published hostnames falls outside
+// the caller's current scope, guarding against a scope change leaving stale
+// authority over another client's namespace.
+func (s *Server) hostsInScope(hosts []TunnelHost, c Client) error {
+	for _, h := range hosts {
+		if e := s.scope(h.Hostname, c); e != nil {
+			return bad(409, "tunnel publishes a hostname outside your current scope; reconcile before changing it")
+		}
+	}
+	return nil
+}
+
+type tunnelConfig struct {
+	Config struct {
+		Ingress []struct {
+			Hostname      string          `json:"hostname"`
+			Service       string          `json:"service"`
+			Path          string          `json:"path"`
+			OriginRequest json.RawMessage `json:"originRequest"`
+		} `json:"ingress"`
+		OriginRequest json.RawMessage `json:"originRequest"`
+		WarpRouting   json.RawMessage `json:"warp-routing"`
+	} `json:"config"`
+}
+
+// set reports whether a raw JSON field holds a meaningful (non-null/empty)
+// value. Cloudflare returns defaults such as {} or null for unset fields.
+func set(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	return s != "" && s != "null" && s != "{}" && s != "[]"
+}
+
+func (s *Server) fetchTunnelConfig(r *http.Request, id string) (tunnelConfig, error) {
+	var actual tunnelConfig
 	raw, e := s.cf.json(r.Context(), "GET", s.account("/cfd_tunnel/"+enc(id)+"/configurations"), nil)
 	if e != nil {
-		return e
-	}
-	var actual struct {
-		Config struct {
-			Ingress []struct {
-				Hostname      string          `json:"hostname"`
-				Service       string          `json:"service"`
-				Path          string          `json:"path"`
-				OriginRequest json.RawMessage `json:"originRequest"`
-			} `json:"ingress"`
-			OriginRequest json.RawMessage `json:"originRequest"`
-		} `json:"config"`
+		return actual, e
 	}
 	if json.Unmarshal(raw, &actual) != nil {
-		return fmt.Errorf("unreadable tunnel configuration")
+		return actual, fmt.Errorf("unreadable tunnel configuration")
+	}
+	return actual, nil
+}
+
+// configMatches reports whether the live tunnel configuration exactly reflects
+// the supplied host list. A non-nil error means the live state could not be
+// read or parsed (as opposed to differing), so callers can tell upstream
+// failures apart from drift.
+func (s *Server) configMatches(r *http.Request, id string, hosts []TunnelHost) (bool, error) {
+	actual, e := s.fetchTunnelConfig(r, id)
+	if e != nil {
+		return false, e
 	}
 	expected := map[string]string{}
 	for _, h := range hosts {
 		expected[h.Hostname] = h.Service
 	}
 	if len(actual.Config.Ingress) != len(hosts)+1 {
-		return bad(409, "tunnel configuration drift detected; reconcile in Cloudflare")
+		return false, nil
 	}
 	for i, item := range actual.Config.Ingress {
 		if i == len(actual.Config.Ingress)-1 {
-			if item.Hostname != "" || item.Service != "http_status:404" {
-				return bad(409, "tunnel fallback configuration drift")
+			if item.Hostname != "" || item.Service != "http_status:404" || item.Path != "" || set(item.OriginRequest) {
+				return false, nil
 			}
 			continue
 		}
-		if expected[item.Hostname] != item.Service || item.Path != "" || len(item.OriginRequest) > 2 && string(item.OriginRequest) != "null" {
-			return bad(409, "tunnel ingress configuration drift")
+		if expected[item.Hostname] != item.Service || item.Path != "" || set(item.OriginRequest) {
+			return false, nil
 		}
 		delete(expected, item.Hostname)
 	}
-	if len(expected) > 0 || (len(actual.Config.OriginRequest) > 2 && string(actual.Config.OriginRequest) != "null") {
-		return bad(409, "tunnel ingress configuration drift")
+	if len(expected) > 0 || set(actual.Config.OriginRequest) || set(actual.Config.WarpRouting) {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (s *Server) verifyTunnelConfig(r *http.Request, c Client, id string, hosts []TunnelHost) error {
+	ok, e := s.configMatches(r, id, hosts)
+	if e != nil {
+		return e
+	}
+	if !ok {
+		return bad(409, "tunnel configuration drift detected; reconcile in Cloudflare")
+	}
+	return nil
+}
+
+// tunnelLiveEmpty confirms the live tunnel has no published ingress hostnames,
+// so a delete does not remove a tunnel that was changed outside the bridge.
+func (s *Server) tunnelLiveEmpty(r *http.Request, id string) error {
+	actual, e := s.fetchTunnelConfig(r, id)
+	if e != nil {
+		return e
+	}
+	for _, item := range actual.Config.Ingress {
+		if item.Hostname != "" {
+			return bad(409, "tunnel has live ingress not managed by the bridge; reconcile in Cloudflare")
+		}
+	}
+	if set(actual.Config.WarpRouting) {
+		return bad(409, "tunnel has warp-routing enabled; reconcile in Cloudflare")
 	}
 	return nil
 }
@@ -148,6 +212,9 @@ func (s *Server) tunnels(r *http.Request, c Client, p []string) (int, any, error
 			if len(hosts) > 0 {
 				return 0, nil, bad(409, "delete published hostnames before deleting tunnel")
 			}
+			if e = s.tunnelLiveEmpty(r, t.ID); e != nil {
+				return 0, nil, e
+			}
 			if _, e = s.cf.json(r.Context(), "DELETE", tpath, nil); e != nil {
 				return 0, nil, e
 			}
@@ -159,6 +226,13 @@ func (s *Server) tunnels(r *http.Request, c Client, p []string) (int, any, error
 		return 0, nil, bad(405, "method not allowed")
 	}
 	if len(p) == 3 && p[2] == "token" && r.Method == "GET" {
+		hosts, e := s.tunnelHosts(c, t.ID)
+		if e != nil {
+			return 0, nil, e
+		}
+		if e = s.hostsInScope(hosts, c); e != nil {
+			return 0, nil, e
+		}
 		raw, e := s.cf.json(r.Context(), "GET", tpath+"/token", nil)
 		if e != nil {
 			return 0, nil, e
@@ -225,11 +299,11 @@ func (s *Server) tunnels(r *http.Request, c Client, p []string) (int, any, error
 				return 0, nil, e
 			}
 			details, _ := json.Marshal(h)
-			if e = s.store.Put(Resource{Owner: c.Name, Kind: "tunnel_host", ID: t.ID + "|" + h.Hostname, Name: h.Hostname, Details: string(details)}); e != nil {
-				return 0, nil, e
-			}
-			if e = s.store.Put(Resource{Owner: c.Name, Kind: "tunnel_dns", ID: h.DNSID, Name: h.Hostname}); e != nil {
-				return 0, nil, e
+			if e = s.store.PutAll(
+				Resource{Owner: c.Name, Kind: "tunnel_host", ID: t.ID + "|" + h.Hostname, Name: h.Hostname, Details: string(details)},
+				Resource{Owner: c.Name, Kind: "tunnel_dns", ID: h.DNSID, Name: h.Hostname},
+			); e != nil {
+				return 0, nil, bad(502, "hostname published in Cloudflare but ownership could not be recorded; reconcile DNS record "+h.DNSID)
 			}
 			return 201, h, nil
 		}
@@ -252,20 +326,36 @@ func (s *Server) tunnels(r *http.Request, c Client, p []string) (int, any, error
 		if found == nil {
 			return 0, nil, bad(404, "hostname not owned by this tunnel")
 		}
-		if e = s.verifyTunnelConfig(r, c, t.ID, hosts); e != nil {
-			return 0, nil, e
-		}
-		dnsRaw, e := s.cf.json(r.Context(), "GET", s.zone("/dns_records/"+enc(found.DNSID)), nil)
+		// Accept either the pre-delete ingress (build) or post-delete ingress
+		// (already removed), so an interrupted delete can be retried safely.
+		preOK, e := s.configMatches(r, t.ID, hosts)
 		if e != nil {
 			return 0, nil, e
 		}
-		var dns DNSRecord
-		_ = json.Unmarshal(dnsRaw, &dns)
-		if dns.Name != hostname || dns.Type != "CNAME" || dns.Content != t.ID+".cfargotunnel.com" {
-			return 0, nil, bad(409, "tunnel DNS drift detected")
+		postOK := false
+		if !preOK {
+			postOK, e = s.configMatches(r, t.ID, newHosts)
+			if e != nil {
+				return 0, nil, e
+			}
 		}
-		if _, e = s.cf.json(r.Context(), "PUT", tpath+"/configurations", ingress(newHosts)); e != nil {
-			return 0, nil, e
+		if !preOK && !postOK {
+			return 0, nil, bad(409, "tunnel configuration drift detected; reconcile in Cloudflare")
+		}
+		// Verify the DNS record while it exists; a 404 means a prior attempt
+		// already removed it, which is success for this idempotent delete.
+		dnsRaw, e := s.cf.json(r.Context(), "GET", s.zone("/dns_records/"+enc(found.DNSID)), nil)
+		if e == nil {
+			var dns DNSRecord
+			_ = json.Unmarshal(dnsRaw, &dns)
+			if dns.Name != "" && (dns.Name != hostname || dns.Type != "CNAME" || dns.Content != t.ID+".cfargotunnel.com") {
+				return 0, nil, bad(409, "tunnel DNS drift detected")
+			}
+		}
+		if preOK {
+			if _, e = s.cf.json(r.Context(), "PUT", tpath+"/configurations", ingress(newHosts)); e != nil {
+				return 0, nil, e
+			}
 		}
 		if _, e = s.cf.json(r.Context(), "DELETE", s.zone("/dns_records/"+enc(found.DNSID)), nil); e != nil {
 			return 0, nil, e

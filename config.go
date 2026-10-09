@@ -102,11 +102,16 @@ func LoadConfigFrom(environ []string) (Config, error) {
 		return c, errors.New("at least one BRIDGE_CLIENT_* is required")
 	}
 	seenKeys := map[[32]byte]bool{}
+	seenNames := map[string]string{}
 	for _, k := range keys {
 		name := strings.ToLower(strings.TrimPrefix(k, "BRIDGE_CLIENT_"))
 		if !idPattern.MatchString(name) {
 			return c, fmt.Errorf("invalid client variable: %s", k)
 		}
+		if prior, ok := seenNames[name]; ok {
+			return c, fmt.Errorf("duplicate client name %q produced by %s and %s; client names are case-insensitive", name, prior, k)
+		}
+		seenNames[name] = k
 		var cli Client
 		dec := json.NewDecoder(strings.NewReader(env[k]))
 		dec.DisallowUnknownFields()
@@ -115,7 +120,7 @@ func LoadConfigFrom(environ []string) (Config, error) {
 		}
 		cli.Name = name
 		if isPlaceholder(cli.Key) {
-			return c, fmt.Errorf("%s: client key is still the example placeholder (%q); generate one with `openssl rand -hex 32`", k, cli.Key)
+			return c, fmt.Errorf("%s: client key looks like an example placeholder or contains a placeholder phrase; generate one with `openssl rand -hex 32`", k)
 		}
 		if len(cli.Key) < 24 {
 			return c, fmt.Errorf("%s: key must be >=24 bytes", k)

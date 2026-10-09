@@ -66,6 +66,267 @@ func TestConfigValidAndOverlaps(t *testing.T) {
 		t.Fatal("substring bypass")
 	}
 }
+func TestDuplicateClientNamesRejected(t *testing.T) {
+	base := []string{"CF_ACCOUNT_ID=a", "CF_ZONE_ID=z", "CF_ZONE_NAME=example.com", "CF_API_TOKEN=some-token",
+		"BRIDGE_CLIENT_A=" + `{"key":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","scope":"a.example.com","descendants":true,"permissions":["dns"]}`}
+	if _, e := LoadConfigFrom(base); e != nil {
+		t.Fatalf("single client rejected: %v", e)
+	}
+	clash := append(append([]string{}, base...), "BRIDGE_CLIENT_a="+`{"key":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","scope":"b.example.com","descendants":true,"permissions":["dns"]}`)
+	if _, e := LoadConfigFrom(clash); e == nil {
+		t.Fatal("case-colliding client names accepted")
+	}
+}
+
+func TestAuthMinimumKeyLength(t *testing.T) {
+	short := strings.Repeat("c", 24)
+	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) { cfok(w, []any{}) })
+	s.cfg.Clients = []Client{{Name: "shortkey", Key: short, Scope: "short.example.com", Descendants: true, Permissions: []string{"dns"}}}
+	if w := req(s, "GET", "/api/v1/me", short, ""); w.Code != 200 {
+		t.Fatalf("24-byte key rejected: %d %s", w.Code, w.Body.String())
+	}
+	if w := req(s, "GET", "/api/v1/me", strings.Repeat("c", 23), ""); w.Code != 401 {
+		t.Fatalf("too-short key accepted: %d", w.Code)
+	}
+}
+
+func TestScopeRecheckBlocksStaleAuthority(t *testing.T) {
+	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zones/zone/workers/routes":
+			cfok(w, []any{map[string]any{"id": "r1", "pattern": "app.mail.example.com/*", "script": "cfb-hermes-x"}})
+		default:
+			cfok(w, map[string]any{"id": "ok"})
+		}
+	})
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "worker", ID: "cfb-hermes-x", Name: "x"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "PUT", "/api/v1/workers/cfb-hermes-x", clients[0].Key, `{"script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 409 {
+		t.Fatalf("worker with out-of-scope route updated: %d %s", w.Code, w.Body.String())
+	}
+
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel", ID: "t1", Name: "t"}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel_host", ID: "t1|app.mail.example.com", Name: "app.mail.example.com", Details: `{"hostname":"app.mail.example.com","service":"http://x"}`}); e != nil {
+		t.Fatal(e)
+	}
+	w = req(s, "GET", "/api/v1/tunnels/t1/token", clients[0].Key, "")
+	if w.Code != 409 {
+		t.Fatalf("token for out-of-scope tunnel returned: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestTunnelHostnameDeleteResumes(t *testing.T) {
+	dnsPresent := true
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/accounts/account/cfd_tunnel/t1/configurations":
+			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}}})
+			return
+		case "/zones/zone/dns_records/d1":
+			if r.Method == "GET" && dnsPresent {
+				cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "CNAME", "content": "t1.cfargotunnel.com"})
+				return
+			}
+		}
+		cfok(w, map[string]any{"ok": true})
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel", ID: "t1", Name: "t"}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel_host", ID: "t1|app.hermes.example.com", Name: "app.hermes.example.com", Details: `{"hostname":"app.hermes.example.com","service":"http://x","dns_id":"d1"}`}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel_dns", ID: "d1", Name: "app.hermes.example.com"}); e != nil {
+		t.Fatal(e)
+	}
+	// Ingress already lacks the hostname and DNS is gone: a retry must succeed.
+	dnsPresent = false
+	w := req(s, "DELETE", "/api/v1/tunnels/t1/hostnames/app.hermes.example.com", clients[0].Key, "")
+	if w.Code != 200 {
+		t.Fatalf("resumable delete failed: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok, _ := s.store.Get("hermes", "tunnel_dns", "d1"); ok {
+		t.Fatal("tunnel_dns guard row not cleaned up")
+	}
+}
+
+func TestDNSPriorityZeroAndProxiedFalseSerialized(t *testing.T) {
+	var got map[string]any
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" || r.Method == "PUT" {
+			json.NewDecoder(r.Body).Decode(&got)
+		}
+		cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "MX", "content": "mx.example.com"})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"MX","content":"mx.example.com","priority":0,"proxied":false}`)
+	if w.Code != 201 {
+		t.Fatalf("mx create failed: %d %s", w.Code, w.Body.String())
+	}
+	if p, ok := got["priority"]; !ok || p.(float64) != 0 {
+		t.Fatalf("priority 0 not serialized: %v", got["priority"])
+	}
+	if _, ok := got["proxied"]; !ok {
+		t.Fatal("proxied false not serialized")
+	}
+}
+
+func TestStorePutAllAtomic(t *testing.T) {
+	s, e := OpenStore(filepath.Join(t.TempDir(), "db.sqlite"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = s.Put(Resource{Owner: "a", Kind: "k", ID: "x", Name: "x"}); e != nil {
+		t.Fatal(e)
+	}
+	e = s.PutAll(
+		Resource{Owner: "a", Kind: "k", ID: "y", Name: "y"},
+		Resource{Owner: "b", Kind: "k", ID: "x", Name: "x"},
+	)
+	if e == nil {
+		t.Fatal("conflicting PutAll succeeded")
+	}
+	if _, ok, _ := s.Get("a", "k", "y"); ok {
+		t.Fatal("PutAll left a partial write after rollback")
+	}
+}
+
+func TestStoreGetFailsClosedOnError(t *testing.T) {
+	s, e := OpenStore(filepath.Join(t.TempDir(), "db.sqlite"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = s.exec("DROP TABLE resources"); e != nil {
+		t.Fatal(e)
+	}
+	if _, _, e = s.Get("a", "k", "x"); e == nil {
+		t.Fatal("Get hid a storage error as not-found")
+	}
+}
+
+func TestInstanceBinding(t *testing.T) {
+	dir := t.TempDir()
+	s, e := OpenStore(filepath.Join(dir, "db.sqlite"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = s.BindInstance("zone1", "acct1"); e != nil {
+		t.Fatal(e)
+	}
+	if e = s.BindInstance("zone1", "acct1"); e != nil {
+		t.Fatalf("idempotent rebind rejected: %v", e)
+	}
+	if e = s.BindInstance("zone2", "acct2"); e == nil {
+		t.Fatal("database accepted a different zone/account")
+	}
+	s.Close()
+	s, e = OpenStore(filepath.Join(dir, "db.sqlite"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	if e = s.BindInstance("zone2", "acct2"); e == nil {
+		t.Fatal("rebinding after reopen accepted a different instance")
+	}
+}
+
+func TestEmailPaginationPageSize(t *testing.T) {
+	var perPage string
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			cfok(w, map[string]any{"id": "rule1"})
+			return
+		}
+		perPage = r.URL.Query().Get("per_page")
+		cfok(w, []any{})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/email", clients[0].Key, `{"address":"team@hermes.example.com","action":"drop"}`)
+	if w.Code != 201 {
+		t.Fatalf("email create failed: %d %s", w.Code, w.Body.String())
+	}
+	if perPage != "50" {
+		t.Fatalf("email list per_page = %q, want 50", perPage)
+	}
+}
+
+func TestWorkerMockRejectsUnexpected(t *testing.T) {
+	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/accounts/account/workers/scripts/cfb-hermes-x":
+			if r.Method == http.MethodPut {
+				cfok(w, map[string]any{"id": "cfb-hermes-x"})
+				return
+			}
+		case "/accounts/account/workers/scripts/cfb-hermes-x/subdomain":
+			cfok(w, map[string]any{"enabled": false})
+			return
+		case "/zones/zone/workers/routes":
+			cfok(w, []any{})
+			return
+		}
+		t.Errorf("unexpected upstream request: %s %s", r.Method, r.URL.Path)
+		cfok(w, map[string]any{"id": "unexpected"})
+	})
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "worker", ID: "cfb-hermes-x", Name: "x"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "PUT", "/api/v1/workers/cfb-hermes-x", clients[0].Key, `{"script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 200 {
+		t.Fatalf("worker update failed: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestEmailDriftOnActionChange(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zones/zone/email/routing/rules/rule1":
+			// Stored rule was forward; Cloudflare now says drop.
+			cfok(w, map[string]any{
+				"id":       "rule1",
+				"matchers": []any{map[string]any{"type": "literal", "field": "to", "value": "team@hermes.example.com"}},
+				"actions":  []any{map[string]any{"type": "drop"}},
+			})
+		default:
+			cfok(w, map[string]any{})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "email_rule", ID: "rule1", Name: "team@hermes.example.com", Details: "forward:dest@example.net"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "DELETE", "/api/v1/email/rule1", clients[0].Key, "")
+	if w.Code != 409 {
+		t.Fatalf("action change not detected: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDNSManagedRecordFailClosed(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zones/zone/dns_records/a1":
+			cfok(w, map[string]any{"id": "a1", "name": "app.hermes.example.com", "type": "A", "content": "198.51.100.1"})
+		default:
+			cfok(w, map[string]any{"ok": true})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.exec("DROP TABLE resources"); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "DELETE", "/api/v1/dns/a1", clients[0].Key, "")
+	if w.Code != 502 {
+		t.Fatalf("storage error not surfaced: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestDNSIsolationAndMutations(t *testing.T) {
 	var mu sync.Mutex
 	mutations := 0

@@ -70,10 +70,13 @@ func secureKey(token, expected string) bool {
 }
 func (s *Server) authenticate(r *http.Request) (Client, error) {
 	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, "Bearer ") || len(h) < 32 {
+	if !strings.HasPrefix(h, "Bearer ") {
 		return Client{}, bad(401, "Bearer API key required")
 	}
 	t := strings.TrimPrefix(h, "Bearer ")
+	if len(t) < 24 {
+		return Client{}, bad(401, "invalid API key")
+	}
 	var c Client
 	match := 0
 	for _, x := range s.cfg.Clients {
@@ -112,20 +115,24 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	c, e := s.authenticate(r)
 	if e != nil {
+		s.auditDenied("", r, 401)
 		failure(w, e)
 		return
 	}
 	if !s.rateAllow(c.Name) {
+		s.auditDenied(c.Name, r, 429)
 		failure(w, bad(429, "rate limit exceeded"))
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/"), "/")
 	if len(parts) > 5 {
+		s.auditDenied(c.Name, r, 404)
 		failure(w, bad(404, "not found"))
 		return
 	}
 	permission := parts[0]
 	if permission != "me" && !hasPermission(c, permission) {
+		s.auditDenied(c.Name, r, 403)
 		failure(w, bad(403, "capability not granted"))
 		return
 	}
@@ -164,7 +171,20 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	} else {
 		send(w, status, result)
 	}
-	s.store.Audit(c.Name, r.Method, r.URL.Path, status)
+	if ae := s.store.Audit(c.Name, r.Method, r.URL.Path, status); ae != nil {
+		log.Printf("audit write failed: %v", ae)
+	}
+}
+
+// auditDenied records an early rejection (bad key, rate limit, missing
+// capability) so authentication and authorization failures leave a trail.
+func (s *Server) auditDenied(client string, r *http.Request, status int) {
+	if s.store == nil {
+		return
+	}
+	if ae := s.store.Audit(client, r.Method, r.URL.Path, status); ae != nil {
+		log.Printf("audit write failed: %v", ae)
+	}
 }
 
 type statusRecorder struct {
@@ -223,6 +243,32 @@ func (s *Server) scope(host string, c Client) error {
 	return nil
 }
 
+// hostFromPattern recovers the hostname from the exact "host/*" Worker route
+// pattern the bridge creates.
+func hostFromPattern(pattern string) string { return strings.TrimSuffix(pattern, "/*") }
+
+// workerRoutesInScope fails when a Worker is still routed to a hostname outside
+// the caller's current scope. It stops a client whose scope changed (or shrank)
+// from mutating a Worker that now serves another client's namespace.
+func (s *Server) workerRoutesInScope(r *http.Request, c Client, script string) error {
+	existing, e := s.cf.all(r.Context(), s.zone("/workers/routes"))
+	if e != nil {
+		return e
+	}
+	for _, v := range existing {
+		var x struct {
+			Pattern string `json:"pattern"`
+			Script  string `json:"script"`
+		}
+		if json.Unmarshal(v, &x) == nil && x.Script == script {
+			if e := s.scope(hostFromPattern(x.Pattern), c); e != nil {
+				return bad(409, "Worker is routed to a hostname outside your current scope; reconcile before changing it")
+			}
+		}
+	}
+	return nil
+}
+
 var resourceID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 
 func validateID(id string) error {
@@ -244,6 +290,40 @@ func (s *Server) owned(c Client, kind, id string) (Resource, error) {
 	}
 	return item, nil
 }
+
+// advisoryScopeCheck logs (but does not block) when stored resources carry
+// hostnames outside the owning client's current scope, which usually means a
+// client scope changed without a matching migration.
+func (s *Server) advisoryScopeCheck() {
+	rows, e := s.store.ListAll()
+	if e != nil {
+		log.Printf("scope advisory check skipped: %v", e)
+		return
+	}
+	byName := map[string]Client{}
+	for _, c := range s.cfg.Clients {
+		byName[c.Name] = c
+	}
+	for _, row := range rows {
+		c, ok := byName[row.Owner]
+		if !ok {
+			log.Printf("WARNING: stored %s %q is owned by unknown client %q (client removed?)", row.Kind, row.Name, row.Owner)
+			continue
+		}
+		if row.Kind == "tunnel_dns" || row.Kind == "tunnel_host" || row.Kind == "worker_route" || row.Kind == "email_rule" {
+			host := hostFromPattern(row.Name)
+			if row.Kind == "email_rule" {
+				if at := strings.LastIndex(row.Name, "@"); at >= 0 {
+					host = row.Name[at+1:]
+				}
+			}
+			if validHost(host) && !inside(host, c) {
+				log.Printf("WARNING: stored %s %q for client %q is outside its current scope %q; reconcile or clear BRIDGE_DATA_DIR", row.Kind, row.Name, row.Owner, c.Scope)
+			}
+		}
+	}
+}
+
 func randomID() string {
 	b := make([]byte, 10)
 	if _, e := rand.Read(b); e != nil {
@@ -295,8 +375,12 @@ func main() {
 		log.Fatal(e)
 	}
 	defer store.Close()
+	if e = store.BindInstance(c.ZoneID, c.AccountID); e != nil {
+		log.Fatalf("refusing to start: %v", e)
+	}
 	s := &Server{cfg: c, cf: &Cloudflare{Base: "https://api.cloudflare.com/client/v4", Token: c.Token, Client: &http.Client{Timeout: 25 * time.Second}}, store: store}
 	srv := &http.Server{Addr: c.Listen, Handler: s.logRequests(http.HandlerFunc(s.route)), ReadHeaderTimeout: 8 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 50 * time.Second, IdleTimeout: 60 * time.Second}
+	s.advisoryScopeCheck()
 	log.Printf("listening on %s (%d clients; zone %s)", c.Listen, len(c.Clients), c.ZoneName)
 	log.Fatal(srv.ListenAndServe())
 }

@@ -65,6 +65,9 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 			if json.Unmarshal(raw, &cfroute) != nil || cfroute.Pattern != item.Name || cfroute.Script != item.Details {
 				return 0, nil, bad(409, "Worker route drift detected")
 			}
+			if e = s.scope(hostFromPattern(item.Name), c); e != nil {
+				return 0, nil, e
+			}
 			if _, e = s.cf.json(r.Context(), "DELETE", routes+"/"+enc(item.ID), nil); e != nil {
 				return 0, nil, e
 			}
@@ -115,6 +118,9 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 				return 0, nil, bad(409, "Worker has unmanaged routes; refusing deletion")
 			}
 		}
+		if e = s.workerRoutesInScope(r, c, worker.ID); e != nil {
+			return 0, nil, e
+		}
 		if _, e = s.cf.json(r.Context(), "DELETE", wpath, nil); e != nil {
 			return 0, nil, e
 		}
@@ -132,6 +138,9 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 		}
 		if len(input.Script) == 0 || len(input.Script) > 512*1024 {
 			return 0, nil, bad(400, "invalid script length")
+		}
+		if e = s.workerRoutesInScope(r, c, worker.ID); e != nil {
+			return 0, nil, e
 		}
 		if _, e := s.cf.uploadWorker(r.Context(), wpath, input.Script); e != nil {
 			return 0, nil, e

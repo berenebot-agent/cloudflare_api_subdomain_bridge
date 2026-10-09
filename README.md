@@ -30,7 +30,7 @@ docker compose up -d --build
 docker compose logs --tail=50
 ```
 
-Compose binds the bridge to **127.0.0.1:8080**. Publish through your existing reverse proxy with HTTPS/mTLS, or access via an authenticated private network. **Never expose its raw HTTP listener to the public Internet**. The documentation page can submit API calls using locally entered client credentials, so use HTTPS when opening it.
+By default Compose publishes the bridge on **0.0.0.0:8080** (every host interface). **The raw listener is plaintext HTTP**, so set `BRIDGE_LISTEN_ADDR=127.0.0.1` in `.env` to bind host-loopback only, then publish through your existing reverse proxy with HTTPS/mTLS or an authenticated private network. **Never expose its raw HTTP listener to the public Internet**. The documentation page can submit API calls using locally entered client credentials, so use HTTPS when opening it.
 
 ### Mandatory environment variables
 
@@ -39,13 +39,15 @@ CF_API_TOKEN=your_scoped_cloudflare_api_token
 CF_ACCOUNT_ID=your_cloudflare_account_id
 CF_ZONE_ID=your_cloudflare_zone_id
 CF_ZONE_NAME=example.com
-BRIDGE_LISTEN_ADDR=:8080
+BRIDGE_LISTEN_ADDR=127.0.0.1
+BRIDGE_PORT=8080
 BRIDGE_DATA_DIR=/data
 BRIDGE_RATE_PER_MIN=120
 BRIDGE_CLIENT_HERMES='{"key":"64_PLUS_RANDOM_HEX_CHARACTERS","scope":"hermes.example.com","descendants":true,"permissions":["dns","workers","tunnels","email"]}'
 BRIDGE_CLIENT_MAILMOOSE='{"key":"ANOTHER_LONG_UNIQUE_RANDOM_KEY","scope":"mail.example.com","descendants":true,"permissions":["dns","email"]}'
 ```
 
+- `BRIDGE_LISTEN_ADDR` is a **bare bind host** (for example `127.0.0.1` or `0.0.0.0`), **not** a `host:port` string. The listen port comes from `BRIDGE_PORT` (default `8080`). Compose also uses these two variables to publish the container port on the host, so a `0.0.0.0` value exposes the plaintext listener on every host interface.
 - `CF_ZONE_NAME` is needed to validate the subdomain boundary, in addition to the zone ID.
 - `BRIDGE_CLIENT_*` clients are defined **entirely** in `.env`. Every API key should be unique, unpredictable and at least 24 bytes; generate with `openssl rand -hex 32`. Changing clients/permissions requires `docker compose up -d --force-recreate`.
 - `descendants:false` allows the exact hostname only; `true` includes subordinate names such as `app.hermes.example.com`. **Overlapping assignments are rejected.**

@@ -80,13 +80,23 @@ func (cf *Cloudflare) json(ctx context.Context, method, path string, body any) (
 	return cf.call(ctx, method, path, "application/json", b)
 }
 func (cf *Cloudflare) all(ctx context.Context, path string) ([]json.RawMessage, error) {
+	return cf.allWithPageSize(ctx, path, 100)
+}
+
+// allWithPageSize paginates an endpoint, requesting perPage items per page.
+// Cloudflare caps some endpoints lower than others (for example Email Routing
+// rules allow at most 50), so callers must not assume a single global maximum.
+func (cf *Cloudflare) allWithPageSize(ctx context.Context, path string, perPage int) ([]json.RawMessage, error) {
+	if perPage < 1 {
+		perPage = 100
+	}
 	out := []json.RawMessage{}
 	for page := 1; page <= 50; page++ {
 		sep := "?"
 		if strings.Contains(path, "?") {
 			sep = "&"
 		}
-		req, e := http.NewRequestWithContext(ctx, "GET", cf.Base+path+sep+fmt.Sprintf("per_page=100&page=%d", page), nil)
+		req, e := http.NewRequestWithContext(ctx, "GET", cf.Base+path+sep+fmt.Sprintf("per_page=%d&page=%d", perPage, page), nil)
 		if e != nil {
 			return nil, e
 		}

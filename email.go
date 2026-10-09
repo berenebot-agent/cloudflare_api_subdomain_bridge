@@ -36,6 +36,36 @@ func matcherAddress(raw json.RawMessage) string {
 	}
 	return strings.ToLower(m.Value)
 }
+
+// ruleMatchesDetails reports whether a live rule still matches the stored
+// "<action>:<destination>" fingerprint. Action type is always compared;
+// destination is compared for forward rules. Worker destinations are compared
+// by action only, since Cloudflare may normalise the stored script reference.
+func ruleMatchesDetails(raw json.RawMessage, details string) bool {
+	if details == "" {
+		return true
+	}
+	var rule cfMailRule
+	if json.Unmarshal(raw, &rule) != nil || len(rule.Actions) != 1 {
+		return false
+	}
+	a := rule.Actions[0]
+	stored := strings.SplitN(details, ":", 2)
+	if !strings.EqualFold(a.Type, stored[0]) {
+		return false
+	}
+	if a.Type != "forward" {
+		return true
+	}
+	dest := ""
+	if len(a.Value) > 0 {
+		dest = a.Value[0]
+	}
+	if len(stored) < 2 {
+		return dest == ""
+	}
+	return strings.EqualFold(dest, stored[1])
+}
 func (s *Server) mailAddress(address string, c Client) error {
 	if len(address) > 90 || strings.Count(address, "@") != 1 {
 		return bad(400, "invalid email address")
@@ -62,6 +92,9 @@ func (s *Server) email(r *http.Request, c Client, p []string) (int, any, error) 
 					return 0, nil, e
 				}
 				if matcherAddress(raw) != item.Name {
+					return 0, nil, bad(409, "Email rule drift detected")
+				}
+				if !ruleMatchesDetails(raw, item.Details) {
 					return 0, nil, bad(409, "Email rule drift detected")
 				}
 				out = append(out, json.RawMessage(raw))
@@ -102,7 +135,7 @@ func (s *Server) email(r *http.Request, c Client, p []string) (int, any, error) 
 			default:
 				return 0, nil, bad(400, "action must be drop, forward or worker")
 			}
-			existing, e := s.cf.all(r.Context(), base)
+			existing, e := s.cf.allWithPageSize(r.Context(), base, 50)
 			if e != nil {
 				return 0, nil, e
 			}
@@ -137,6 +170,9 @@ func (s *Server) email(r *http.Request, c Client, p []string) (int, any, error) 
 			return 0, nil, e
 		}
 		if matcherAddress(raw) != item.Name {
+			return 0, nil, bad(409, "Email rule has changed outside bridge; refusing deletion")
+		}
+		if !ruleMatchesDetails(raw, item.Details) {
 			return 0, nil, bad(409, "Email rule has changed outside bridge; refusing deletion")
 		}
 		if e = s.mailAddress(item.Name, c); e != nil {

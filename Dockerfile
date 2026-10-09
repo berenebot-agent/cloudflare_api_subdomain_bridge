@@ -10,6 +10,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=builder /bridge /usr/local/bin/bridge
 USER 10001:10001
 WORKDIR /data
-EXPOSE 4403
+EXPOSE 8080
 VOLUME /data
 ENTRYPOINT ["/usr/local/bin/bridge"]

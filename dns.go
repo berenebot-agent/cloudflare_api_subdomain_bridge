@@ -18,6 +18,29 @@ type DNSRecord struct {
 	Proxied  bool   `json:"proxied,omitempty"`
 }
 
+// dnsWrite is the request body sent upstream. Pointers let the bridge transmit
+// meaningful zero values (MX priority 0, proxied false) that omitempty would
+// otherwise drop.
+type dnsWrite struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Content  string `json:"content"`
+	TTL      int    `json:"ttl"`
+	Priority *int   `json:"priority,omitempty"`
+	Proxied  *bool  `json:"proxied,omitempty"`
+}
+
+func (d DNSRecord) writeBody() dnsWrite {
+	w := dnsWrite{Name: d.Name, Type: d.Type, Content: d.Content, TTL: d.TTL}
+	if d.Type == "MX" {
+		p := d.Priority
+		w.Priority = &p
+	}
+	p := d.Proxied
+	w.Proxied = &p
+	return w
+}
+
 var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?$`)
 
 func validDNSName(s string) bool {
@@ -111,7 +134,7 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 			if d.TTL == 0 {
 				d.TTL = 1
 			}
-			raw, e := s.cf.json(r.Context(), "POST", base, d)
+			raw, e := s.cf.json(r.Context(), "POST", base, d.writeBody())
 			if e != nil {
 				return 0, nil, e
 			}
@@ -137,7 +160,11 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 	if e = s.scopeDNS(current.Name, c); e != nil {
 		return 0, nil, e
 	}
-	if _, managed, _ := s.store.Get(c.Name, "tunnel_dns", p[1]); managed {
+	_, managed, me := s.store.Get(c.Name, "tunnel_dns", p[1])
+	if me != nil {
+		return 0, nil, me
+	}
+	if managed {
 		return 0, nil, bad(409, "DNS record is managed by a tunnel; use tunnel hostname operations")
 	}
 	switch r.Method {
@@ -157,7 +184,7 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 		if patch.TTL == 0 {
 			patch.TTL = 1
 		}
-		raw, e = s.cf.json(r.Context(), "PUT", recPath, patch)
+		raw, e = s.cf.json(r.Context(), "PUT", recPath, patch.writeBody())
 		if e != nil {
 			return 0, nil, e
 		}
