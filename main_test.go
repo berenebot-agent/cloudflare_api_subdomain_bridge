@@ -124,7 +124,7 @@ func TestTunnelHostnameDeleteResumes(t *testing.T) {
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/accounts/account/cfd_tunnel/t1/configurations":
-			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}}})
+			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}, "warp-routing": map[string]any{"enabled": false}}})
 			return
 		case "/zones/zone/dns_records/d1":
 			if r.Method == "GET" && dnsPresent {
@@ -506,7 +506,7 @@ func TestTunnelOwnershipAndToken(t *testing.T) {
 			cfok(w, map[string]any{"id": "tunnel-123"})
 		case "/accounts/account/cfd_tunnel/tunnel-123/configurations":
 			if r.Method == "GET" {
-				cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}}})
+				cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}, "warp-routing": map[string]any{"enabled": false}}})
 			} else {
 				cfok(w, map[string]any{"ok": true})
 			}
@@ -635,7 +635,7 @@ func TestTunnelTokenRefusesConfigDrift(t *testing.T) {
 		case "/accounts/account/cfd_tunnel/t1/configurations":
 			// Live tunnel has no published ingress, but the bridge has a stored
 			// hostname: the configuration has drifted.
-			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}}})
+			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}, "warp-routing": map[string]any{"enabled": false}}})
 		case "/accounts/account/cfd_tunnel/t1/token":
 			tokenCalled = true
 			cfok(w, "secret-connector-token")
@@ -737,5 +737,124 @@ func TestWorkerCreateRollsBackOnPersistFailure(t *testing.T) {
 	}
 	if !deleted {
 		t.Fatal("orphaned Worker was not rolled back")
+	}
+}
+
+// TestTunnelDisabledWarpRoutingDoesNotBlock reproduces the live Cloudflare
+// response shape: every remotely-managed tunnel returns a "warp-routing" object
+// even when the feature is off. Treating the mere presence of that key as drift
+// made publish, token and delete fail with 409 for every tunnel the bridge
+// created itself.
+func TestTunnelDisabledWarpRoutingDoesNotBlock(t *testing.T) {
+	// Track the live ingress so a publish is reflected on the next config read,
+	// as Cloudflare would.
+	ingress := []any{map[string]any{"service": "http_status:404"}}
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/accounts/account/cfd_tunnel":
+			if r.Method == "POST" {
+				cfok(w, map[string]any{"id": "t1"})
+				return
+			}
+			cfok(w, []any{})
+		case strings.HasSuffix(r.URL.Path, "/configurations"):
+			if r.Method == "GET" {
+				// Exactly what Cloudflare returns: the warp-routing object is
+				// present even though the feature is off.
+				cfok(w, map[string]any{"config": map[string]any{
+					"ingress":      ingress,
+					"warp-routing": map[string]any{"enabled": false},
+				}})
+				return
+			}
+			var body struct {
+				Config struct {
+					Ingress []any `json:"ingress"`
+				} `json:"config"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if len(body.Config.Ingress) > 0 {
+				ingress = body.Config.Ingress
+			}
+			cfok(w, map[string]any{"ok": true})
+		case strings.HasSuffix(r.URL.Path, "/token"):
+			cfok(w, "secret-connector-token")
+		case strings.Contains(r.URL.Path, "/dns_records"):
+			if r.Method == "GET" {
+				cfok(w, []any{})
+				return
+			}
+			cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "CNAME", "content": "t1.cfargotunnel.com"})
+		default:
+			cfok(w, map[string]any{"id": "t1"})
+		}
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/tunnels", clients[0].Key, `{"name":"backend"}`)
+	if w.Code != 201 {
+		t.Fatalf("tunnel create failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Publish a hostname: the disabled warp-routing field must not read as drift.
+	w = req(s, "POST", "/api/v1/tunnels/t1/hostnames", clients[0].Key, `{"hostname":"app.hermes.example.com","service":"http://127.0.0.1:8080"}`)
+	if w.Code != 201 {
+		t.Fatalf("publish blocked by disabled warp-routing: %d %s", w.Code, w.Body.String())
+	}
+
+	// Fetch a connector token: same guard, same requirement.
+	w = req(s, "GET", "/api/v1/tunnels/t1/token", clients[0].Key, "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "secret-connector-token") {
+		t.Fatalf("token blocked by disabled warp-routing: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestTunnelEnabledWarpRoutingStillBlocks pins the guard's real purpose: an
+// actual enabled warp-routing configuration must still refuse the operation.
+func TestTunnelEnabledWarpRoutingStillBlocks(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/configurations"):
+			cfok(w, map[string]any{"config": map[string]any{
+				"ingress":      []any{map[string]any{"service": "http_status:404"}},
+				"warp-routing": map[string]any{"enabled": true},
+			}})
+		default:
+			cfok(w, map[string]any{"id": "t1"})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel", ID: "t1", Name: "t"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "DELETE", "/api/v1/tunnels/t1", clients[0].Key, "")
+	if w.Code != 409 {
+		t.Fatalf("enabled warp-routing did not block delete: %d %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "warp-routing") {
+		t.Fatalf("wrong refusal reason: %s", w.Body.String())
+	}
+}
+
+// TestWarpRoutingEnabledShapes pins the decoder directly, including the
+// fail-closed path for a shape the bridge does not recognise.
+func TestWarpRoutingEnabledShapes(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{``, false},
+		{`null`, false},
+		{`{}`, false},
+		{`[]`, false},
+		{`{"enabled":false}`, false},
+		{`{"enabled":true}`, true},
+		{`{"enabled":false,"unknown":1}`, false},
+		{`{"enabled":true,"unknown":1}`, true},
+		{`"unexpected"`, true}, // unrecognised shape fails closed
+	}
+	for _, c := range cases {
+		if got := warpRoutingEnabled(json.RawMessage(c.raw)); got != c.want {
+			t.Errorf("warpRoutingEnabled(%s) = %v, want %v", c.raw, got, c.want)
+		}
 	}
 }
