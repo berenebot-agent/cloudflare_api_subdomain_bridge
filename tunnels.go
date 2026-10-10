@@ -89,12 +89,12 @@ func warpRoutingEnabled(raw json.RawMessage) bool {
 		return false
 	}
 	var cfg struct {
-		Enabled bool `json:"enabled"`
+		Enabled *bool `json:"enabled"`
 	}
-	if json.Unmarshal(raw, &cfg) != nil {
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Enabled == nil {
 		return true
 	}
-	return cfg.Enabled
+	return *cfg.Enabled
 }
 
 func (s *Server) fetchTunnelConfig(r *http.Request, id string) (tunnelConfig, error) {
