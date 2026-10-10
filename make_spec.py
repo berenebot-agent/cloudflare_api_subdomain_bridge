@@ -23,17 +23,24 @@ COMMON_ERRORS = {
     '502': 'Upstream or storage operation failed',
 }
 
-# Endpoints that do not create resources never return 201.
-NO_CREATE = {'/api/v1/me', '/api/v1/dns', '/api/v1/dns/{id}',
-             '/api/v1/tunnels', '/api/v1/tunnels/{id}',
-             '/api/v1/tunnels/{id}/hostnames',
-             '/api/v1/workers', '/api/v1/workers/{id}',
-             '/api/v1/workers/routes', '/api/v1/email'}
+# Response-code sets, chosen per operation from the codes the handler can
+# actually emit (see the *_test.go suite and failure() in main.go). Advertising
+# codes an endpoint can never return makes generated clients model failure modes
+# that do not exist.
+ME = {'401', '405', '429'}
+READ = {'401', '403', '405', '429', '502'}
+READ_ID = {'400', '401', '403', '404', '405', '429', '502'}
+CREATE = {'400', '401', '403', '405', '429', '502'}
+CREATE_409 = {'400', '401', '403', '405', '409', '429', '502'}
+MUT_ID = {'400', '401', '403', '404', '405', '409', '429', '502'}
+EMAIL_READ = {'401', '403', '405', '409', '429', '502'}
 
 
 def schema_for(field):
     if field == 'priority':
         return {'type': 'integer', 'minimum': 0, 'maximum': 65535}
+    if field == 'proxied':
+        return {'type': 'boolean'}
     if field == 'ttl':
         return {'type': 'integer', 'description': '1 means automatic; otherwise 60..86400'}
     if field == 'content':
@@ -55,16 +62,11 @@ def schema_for(field):
     return {'type': 'string'}
 
 
-def op(path, method, summary, tag, body=None, required=None, example=None, desc=None,
-       extra_responses=None):
-    if path == '/healthz':
-        statuses = {'200', '405'}
-    else:
-        statuses = {'200'}
-        if path not in NO_CREATE:
-            statuses.add('201')
-        statuses.update({'400', '401', '403', '404', '405', '409', '429', '502'})
-        statuses.update(extra_responses or set())
+def op(path, method, summary, tag, codes, create=False, body=None, required=None,
+       example=None, desc=None):
+    statuses = {'200', *codes}
+    if create:
+        statuses.add('201')
     responses = {code: {'description': COMMON_ERRORS[code]} for code in sorted(statuses)}
     item = {'summary': summary, 'tags': [tag], 'responses': responses}
     if desc:
@@ -90,45 +92,45 @@ def op(path, method, summary, tag, body=None, required=None, example=None, desc=
     P.setdefault(path, {})[method.lower()] = item
 
 
-op('/healthz', 'GET', 'Process health check', 'System')
-op('/api/v1/me', 'GET', 'Authenticated client scope and capabilities', 'System')
-op('/api/v1/dns', 'GET', 'List DNS records under client scope', 'DNS')
-op('/api/v1/dns', 'POST', 'Create scoped DNS record', 'DNS',
+op('/healthz', 'GET', 'Process health check', 'System', set())
+op('/api/v1/me', 'GET', 'Authenticated client scope and capabilities', 'System', ME)
+op('/api/v1/dns', 'GET', 'List DNS records under client scope', 'DNS', READ)
+op('/api/v1/dns', 'POST', 'Create scoped DNS record', 'DNS', CREATE_409, create=True,
    body=['name', 'type', 'content', 'ttl', 'proxied', 'priority'],
    required=['name', 'type', 'content'],
    example={'name': 'app.hermes.example.com', 'type': 'A', 'content': '198.51.100.10', 'ttl': 1})
-op('/api/v1/dns/{id}', 'GET', 'Read DNS record after current-name scope check', 'DNS')
-op('/api/v1/dns/{id}', 'PATCH', 'Replace DNS record; old and new names checked', 'DNS',
+op('/api/v1/dns/{id}', 'GET', 'Read DNS record after current-name scope check', 'DNS', READ_ID)
+op('/api/v1/dns/{id}', 'PATCH', 'Replace DNS record; old and new names checked', 'DNS', MUT_ID,
    body=['name', 'type', 'content', 'ttl', 'proxied', 'priority'],
    required=['name', 'type', 'content'])
-op('/api/v1/dns/{id}', 'DELETE', 'Delete scoped DNS record', 'DNS')
-op('/api/v1/tunnels', 'GET', 'List tunnels created by this bridge for client', 'Tunnels')
-op('/api/v1/tunnels', 'POST', 'Create remotely managed dedicated tunnel', 'Tunnels',
+op('/api/v1/dns/{id}', 'DELETE', 'Delete scoped DNS record', 'DNS', MUT_ID)
+op('/api/v1/tunnels', 'GET', 'List tunnels created by this bridge for client', 'Tunnels', READ)
+op('/api/v1/tunnels', 'POST', 'Create remotely managed dedicated tunnel', 'Tunnels', CREATE, create=True,
    body=['name'], required=['name'], example={'name': 'backend'})
-op('/api/v1/tunnels/{id}', 'GET', 'Read owned tunnel information', 'Tunnels')
-op('/api/v1/tunnels/{id}', 'DELETE', 'Delete empty owned tunnel', 'Tunnels')
-op('/api/v1/tunnels/{id}/token', 'GET', 'Retrieve connector token for owned tunnel; sensitive', 'Tunnels')
-op('/api/v1/tunnels/{id}/hostnames', 'GET', 'List managed ingress hostnames on tunnel', 'Tunnels')
-op('/api/v1/tunnels/{id}/hostnames', 'POST', 'Publish scoped hostname; create proxied CNAME and ingress', 'Tunnels',
+op('/api/v1/tunnels/{id}', 'GET', 'Read owned tunnel information', 'Tunnels', READ_ID)
+op('/api/v1/tunnels/{id}', 'DELETE', 'Delete empty owned tunnel', 'Tunnels', MUT_ID)
+op('/api/v1/tunnels/{id}/token', 'GET', 'Retrieve connector token for owned tunnel; sensitive', 'Tunnels', READ_ID)
+op('/api/v1/tunnels/{id}/hostnames', 'GET', 'List managed ingress hostnames on tunnel', 'Tunnels', READ_ID)
+op('/api/v1/tunnels/{id}/hostnames', 'POST', 'Publish scoped hostname; create proxied CNAME and ingress', 'Tunnels', MUT_ID, create=True,
    body=['hostname', 'service'], required=['hostname', 'service'],
    example={'hostname': 'app.hermes.example.com', 'service': 'http://localhost:8080'})
-op('/api/v1/tunnels/{id}/hostnames/{hostname}', 'DELETE', 'Unpublish hostname and managed DNS record', 'Tunnels')
-op('/api/v1/workers', 'GET', 'List owned Workers', 'Workers')
-op('/api/v1/workers', 'POST', 'Upload module Worker without external bindings; public worker subdomain disabled', 'Workers',
+op('/api/v1/tunnels/{id}/hostnames/{hostname}', 'DELETE', 'Unpublish hostname and managed DNS record', 'Tunnels', MUT_ID)
+op('/api/v1/workers', 'GET', 'List owned Workers', 'Workers', READ)
+op('/api/v1/workers', 'POST', 'Upload module Worker without external bindings; public worker subdomain disabled', 'Workers', CREATE, create=True,
    body=['label', 'script'], required=['label', 'script'],
    example={'label': 'hello', 'script': 'export default {async fetch(){return new Response("ok")}}'})
-op('/api/v1/workers/{id}', 'PUT', 'Replace script of owned Worker', 'Workers',
+op('/api/v1/workers/{id}', 'PUT', 'Replace script of owned Worker', 'Workers', MUT_ID,
    body=['script'], required=['script'])
-op('/api/v1/workers/{id}', 'DELETE', 'Delete owned Worker after routes removed', 'Workers')
-op('/api/v1/workers/{id}/routes', 'POST', 'Create scoped host-only Worker route', 'Workers',
+op('/api/v1/workers/{id}', 'DELETE', 'Delete owned Worker after routes removed', 'Workers', MUT_ID)
+op('/api/v1/workers/{id}/routes', 'POST', 'Create scoped host-only Worker route', 'Workers', MUT_ID, create=True,
    body=['hostname'], required=['hostname'], example={'hostname': 'service.hermes.example.com'})
-op('/api/v1/workers/routes', 'GET', 'List owned Worker routes', 'Workers')
-op('/api/v1/workers/routes/{id}', 'DELETE', 'Delete owned Worker route after drift check', 'Workers')
-op('/api/v1/email', 'GET', 'List owned literal-address Email Routing rules', 'Email')
-op('/api/v1/email', 'POST', 'Create literal-address forward, drop or owned Worker rule', 'Email',
+op('/api/v1/workers/routes', 'GET', 'List owned Worker routes', 'Workers', READ)
+op('/api/v1/workers/routes/{id}', 'DELETE', 'Delete owned Worker route after drift check', 'Workers', MUT_ID)
+op('/api/v1/email', 'GET', 'List owned literal-address Email Routing rules', 'Email', EMAIL_READ)
+op('/api/v1/email', 'POST', 'Create literal-address forward, drop or owned Worker rule', 'Email', CREATE_409, create=True,
    body=['address', 'action', 'destination'], required=['address', 'action'],
    example={'address': 'support@hermes.example.com', 'action': 'forward', 'destination': 'verified@example.net'})
-op('/api/v1/email/{id}', 'DELETE', 'Delete owned email rule after drift check', 'Email')
+op('/api/v1/email/{id}', 'DELETE', 'Delete owned email rule after drift check', 'Email', MUT_ID)
 
 spec = {
     'openapi': '3.1.0',

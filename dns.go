@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -131,6 +133,16 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 			if e := dnsInputValid(d, c); e != nil {
 				return 0, nil, e
 			}
+			existing, e := s.cf.all(r.Context(), base+"?name="+url.QueryEscape(d.Name))
+			if e != nil {
+				return 0, nil, e
+			}
+			for _, record := range existing {
+				var x DNSRecord
+				if json.Unmarshal(record, &x) == nil && x.Name == d.Name {
+					return 0, nil, bad(409, "hostname already has a DNS record")
+				}
+			}
 			if d.TTL == 0 {
 				d.TTL = 1
 			}
@@ -151,6 +163,10 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 	recPath := base + "/" + enc(p[1])
 	raw, e := s.cf.json(r.Context(), "GET", recPath, nil)
 	if e != nil {
+		var ue upstreamError
+		if errors.As(e, &ue) && ue.Status == 404 {
+			return 0, nil, bad(404, "DNS record not found")
+		}
 		return 0, nil, e
 	}
 	var current DNSRecord

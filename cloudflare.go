@@ -32,6 +32,17 @@ type cfEnvelope struct {
 	} `json:"result_info"`
 }
 
+// upstreamError carries the HTTP status Cloudflare returned so callers can
+// distinguish "the resource does not exist" (404) from a genuine upstream or
+// network failure. Without it every rejection collapses into a generic error
+// and surfaces to the client as 502.
+type upstreamError struct {
+	Status int
+	Msg    string
+}
+
+func (e upstreamError) Error() string { return e.Msg }
+
 func (cf *Cloudflare) call(ctx context.Context, method, path, ct string, body []byte) (json.RawMessage, error) {
 	if cf.Client == nil {
 		cf.Client = &http.Client{Timeout: 25 * time.Second}
@@ -68,7 +79,7 @@ func (cf *Cloudflare) call(ctx context.Context, method, path, ct string, body []
 		for _, issue := range v.Errors {
 			msgs = append(msgs, fmt.Sprintf("%d: %s", issue.Code, issue.Message))
 		}
-		return nil, fmt.Errorf("Cloudflare request rejected (status %d): %s", resp.StatusCode, strings.Join(msgs, "; "))
+		return nil, upstreamError{Status: resp.StatusCode, Msg: fmt.Sprintf("Cloudflare request rejected (status %d): %s", resp.StatusCode, strings.Join(msgs, "; "))}
 	}
 	return v.Result, nil
 }

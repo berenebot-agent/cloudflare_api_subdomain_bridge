@@ -158,9 +158,11 @@ func TestTunnelHostnameDeleteResumes(t *testing.T) {
 func TestDNSPriorityZeroAndProxiedFalseSerialized(t *testing.T) {
 	var got map[string]any
 	cf := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" || r.Method == "PUT" {
-			json.NewDecoder(r.Body).Decode(&got)
+		if r.Method == "GET" {
+			cfok(w, []any{})
+			return
 		}
+		json.NewDecoder(r.Body).Decode(&got)
 		cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "MX", "content": "mx.example.com"})
 	}
 	s, _ := newServer(t, cf)
@@ -381,6 +383,51 @@ func TestDNSIsolationAndMutations(t *testing.T) {
 	w = req(s, "DELETE", "/api/v1/dns/a1", token, "")
 	if w.Code != 409 {
 		t.Fatalf("managed tunnel DNS deleted: %d", w.Code)
+	}
+}
+
+func TestDNSCreateRejectsExistingName(t *testing.T) {
+	var mu sync.Mutex
+	mutations := 0
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == "GET" {
+			cfok(w, []any{map[string]any{"id": "a1", "name": "app.hermes.example.com", "type": "TXT", "content": "v=spf1 -all"}})
+			return
+		}
+		mutations++
+		cfok(w, map[string]any{"id": "new"})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.9"}`)
+	if w.Code != 409 {
+		t.Fatalf("collision not rejected: %d %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	n := mutations
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("collision caused %d upstream mutation(s)", n)
+	}
+}
+
+func TestDNSNonexistentIDReturns404(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "result": nil, "errors": []any{map[string]any{"code": 81044, "message": "Record not found"}}})
+	}
+	s, _ := newServer(t, cf)
+	for _, method := range []string{"GET", "PATCH", "DELETE"} {
+		body := ""
+		if method == "PATCH" {
+			body = `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.3"}`
+		}
+		w := req(s, method, "/api/v1/dns/00000000000000000000000000000000", clients[0].Key, body)
+		if w.Code != 404 {
+			t.Fatalf("%s nonexistent id: got %d %s", method, w.Code, w.Body.String())
+		}
 	}
 }
 func TestTunnelOwnershipAndToken(t *testing.T) {
