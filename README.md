@@ -13,7 +13,7 @@ at the edge.
 > has **not** been end-to-end tested against a live account. Try it on a test
 > zone first, especially for Workers, tunnels, and email.
 
-![How the bridge scopes access](docs/bridge-scope.svg)
+![How the bridge scopes access](docs/api-access-flow.png)
 
 ## Why it exists
 
