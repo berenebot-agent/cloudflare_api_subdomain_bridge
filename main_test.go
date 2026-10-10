@@ -158,9 +158,11 @@ func TestTunnelHostnameDeleteResumes(t *testing.T) {
 func TestDNSPriorityZeroAndProxiedFalseSerialized(t *testing.T) {
 	var got map[string]any
 	cf := func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "POST" || r.Method == "PUT" {
-			json.NewDecoder(r.Body).Decode(&got)
+		if r.Method == "GET" {
+			cfok(w, []any{})
+			return
 		}
+		json.NewDecoder(r.Body).Decode(&got)
 		cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "MX", "content": "mx.example.com"})
 	}
 	s, _ := newServer(t, cf)
@@ -381,6 +383,118 @@ func TestDNSIsolationAndMutations(t *testing.T) {
 	w = req(s, "DELETE", "/api/v1/dns/a1", token, "")
 	if w.Code != 409 {
 		t.Fatalf("managed tunnel DNS deleted: %d", w.Code)
+	}
+}
+
+func TestDNSCreateRejectsExistingName(t *testing.T) {
+	var mu sync.Mutex
+	mutations := 0
+	existing := []any{map[string]any{"id": "a1", "name": "app.hermes.example.com", "type": "CNAME", "content": "target.example.net"}}
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == "GET" {
+			cfok(w, existing)
+			return
+		}
+		mutations++
+		cfok(w, map[string]any{"id": "new"})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.9"}`)
+	if w.Code != 409 {
+		t.Fatalf("CNAME collision not rejected: %d %s", w.Code, w.Body.String())
+	}
+	mu.Lock()
+	n := mutations
+	mu.Unlock()
+	if n != 0 {
+		t.Fatalf("collision caused %d upstream mutation(s)", n)
+	}
+}
+
+func TestDNSSameTypeRecordsAllowed(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing []any
+		body     string
+	}{
+		{"second A", []any{map[string]any{"id": "a1", "name": "app.hermes.example.com", "type": "A", "content": "198.51.100.1"}}, `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.2"}`},
+		{"AAAA beside A", []any{map[string]any{"id": "a1", "name": "app.hermes.example.com", "type": "A", "content": "198.51.100.1"}}, `{"name":"app.hermes.example.com","type":"AAAA","content":"2001:db8::1"}`},
+		{"different TXT", []any{map[string]any{"id": "t1", "name": "app.hermes.example.com", "type": "TXT", "content": "v=spf1 -all"}}, `{"name":"app.hermes.example.com","type":"TXT","content":"verify=abc"}`},
+		{"second MX", []any{map[string]any{"id": "m1", "name": "app.hermes.example.com", "type": "MX", "content": "mx1.example.net", "priority": 10}}, `{"name":"app.hermes.example.com","type":"MX","content":"mx2.example.net","priority":20}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "GET" {
+					cfok(w, tc.existing)
+					return
+				}
+				cfok(w, map[string]any{"id": "new"})
+			}
+			s, _ := newServer(t, cf)
+			w := req(s, "POST", "/api/v1/dns", clients[0].Key, tc.body)
+			if w.Code != 201 {
+				t.Fatalf("legitimate record rejected: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestDNSCreateRejectsExactDuplicate(t *testing.T) {
+	existing := []any{map[string]any{"id": "m1", "name": "app.hermes.example.com", "type": "MX", "content": "mx1.example.net", "priority": 10}}
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			cfok(w, existing)
+			return
+		}
+		cfok(w, map[string]any{"id": "new"})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"MX","content":"mx1.example.net","priority":10}`)
+	if w.Code != 409 {
+		t.Fatalf("exact duplicate not rejected: %d %s", w.Code, w.Body.String())
+	}
+	w = req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"CNAME","content":"target.example.net"}`)
+	if w.Code != 409 {
+		t.Fatalf("CNAME beside MX not rejected: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDNSCreateMapsUpstreamConflict(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			cfok(w, []any{})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "result": nil, "errors": []any{map[string]any{"code": 81057, "message": "Record already exists"}}})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/dns", clients[0].Key, `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.9"}`)
+	if w.Code != 409 {
+		t.Fatalf("upstream conflict not mapped: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestDNSNonexistentIDReturns404(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "result": nil, "errors": []any{map[string]any{"code": 81044, "message": "Record not found"}}})
+	}
+	s, _ := newServer(t, cf)
+	for _, method := range []string{"GET", "PATCH", "DELETE"} {
+		body := ""
+		if method == "PATCH" {
+			body = `{"name":"app.hermes.example.com","type":"A","content":"198.51.100.3"}`
+		}
+		w := req(s, method, "/api/v1/dns/00000000000000000000000000000000", clients[0].Key, body)
+		if w.Code != 404 {
+			t.Fatalf("%s nonexistent id: got %d %s", method, w.Code, w.Body.String())
+		}
 	}
 }
 func TestTunnelOwnershipAndToken(t *testing.T) {

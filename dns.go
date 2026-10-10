@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -103,6 +105,26 @@ func dnsInputValid(d DNSRecord, c Client) error {
 	}
 	return nil
 }
+
+// dnsConflict reports whether creating candidate would clash with a record that
+// already exists at the same hostname. A CNAME may not coexist with any other
+// record, and an exact duplicate (same type, content and MX priority) is
+// rejected. Other combinations are allowed: multiple A/AAAA addresses, several
+// MX priorities, and multiple TXT records are all legitimate.
+func dnsConflict(candidate DNSRecord, existing []DNSRecord) bool {
+	for _, e := range existing {
+		if e.Name != candidate.Name {
+			continue
+		}
+		if e.Type == "CNAME" || candidate.Type == "CNAME" {
+			return true
+		}
+		if e.Type == candidate.Type && e.Content == candidate.Content && e.Priority == candidate.Priority {
+			return true
+		}
+	}
+	return false
+}
 func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 	base := s.zone("/dns_records")
 	if len(p) == 1 {
@@ -131,11 +153,28 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 			if e := dnsInputValid(d, c); e != nil {
 				return 0, nil, e
 			}
+			existing, e := s.cf.all(r.Context(), base+"?name="+url.QueryEscape(d.Name))
+			if e != nil {
+				return 0, nil, e
+			}
+			records := []DNSRecord{}
+			for _, record := range existing {
+				var x DNSRecord
+				if json.Unmarshal(record, &x) == nil {
+					records = append(records, x)
+				}
+			}
+			if dnsConflict(d, records) {
+				return 0, nil, bad(409, "conflicting DNS record already exists at this hostname")
+			}
 			if d.TTL == 0 {
 				d.TTL = 1
 			}
 			raw, e := s.cf.json(r.Context(), "POST", base, d.writeBody())
 			if e != nil {
+				if upstreamConflict(e) {
+					return 0, nil, bad(409, "conflicting DNS record already exists at this hostname")
+				}
 				return 0, nil, e
 			}
 			return 201, json.RawMessage(raw), nil
@@ -151,6 +190,10 @@ func (s *Server) dns(r *http.Request, c Client, p []string) (int, any, error) {
 	recPath := base + "/" + enc(p[1])
 	raw, e := s.cf.json(r.Context(), "GET", recPath, nil)
 	if e != nil {
+		var ue upstreamError
+		if errors.As(e, &ue) && ue.Status == 404 {
+			return 0, nil, bad(404, "DNS record not found")
+		}
 		return 0, nil, e
 	}
 	var current DNSRecord

@@ -46,9 +46,6 @@
         "responses": {
           "200": {
             "description": "Operation successful"
-          },
-          "405": {
-            "description": "Method not allowed"
           }
         }
       }
@@ -63,29 +60,14 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
-          },
-          "403": {
-            "description": "Outside scope or feature not granted"
-          },
-          "404": {
-            "description": "Not found or resource not owned by client"
           },
           "405": {
             "description": "Method not allowed"
           },
-          "409": {
-            "description": "Resource conflict or configuration drift"
-          },
           "429": {
             "description": "Rate limit exceeded"
-          },
-          "502": {
-            "description": "Upstream or storage operation failed"
           }
         },
         "security": [
@@ -105,23 +87,14 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
           },
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -145,6 +118,9 @@
           "200": {
             "description": "Operation successful"
           },
+          "201": {
+            "description": "Resource created"
+          },
           "400": {
             "description": "Invalid request"
           },
@@ -153,9 +129,6 @@
           },
           "403": {
             "description": "Outside scope or feature not granted"
-          },
-          "404": {
-            "description": "Not found or resource not owned by client"
           },
           "405": {
             "description": "Method not allowed"
@@ -199,7 +172,7 @@
                     "description": "1 means automatic; otherwise 60..86400"
                   },
                   "proxied": {
-                    "type": "string"
+                    "type": "boolean"
                   },
                   "priority": {
                     "type": "integer",
@@ -344,7 +317,7 @@
                     "description": "1 means automatic; otherwise 60..86400"
                   },
                   "proxied": {
-                    "type": "string"
+                    "type": "boolean"
                   },
                   "priority": {
                     "type": "integer",
@@ -440,23 +413,14 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
           },
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -480,6 +444,9 @@
           "200": {
             "description": "Operation successful"
           },
+          "201": {
+            "description": "Resource created"
+          },
           "400": {
             "description": "Invalid request"
           },
@@ -489,14 +456,8 @@
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -557,9 +518,6 @@
           },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -647,9 +605,6 @@
           "200": {
             "description": "Operation successful"
           },
-          "201": {
-            "description": "Resource created"
-          },
           "400": {
             "description": "Invalid request"
           },
@@ -718,9 +673,6 @@
           "405": {
             "description": "Method not allowed"
           },
-          "409": {
-            "description": "Resource conflict or configuration drift"
-          },
           "429": {
             "description": "Rate limit exceeded"
           },
@@ -753,6 +705,9 @@
         "responses": {
           "200": {
             "description": "Operation successful"
+          },
+          "201": {
+            "description": "Resource created"
           },
           "400": {
             "description": "Invalid request"
@@ -833,9 +788,6 @@
           "200": {
             "description": "Operation successful"
           },
-          "201": {
-            "description": "Resource created"
-          },
           "400": {
             "description": "Invalid request"
           },
@@ -898,23 +850,14 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
           },
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -938,6 +881,9 @@
           "200": {
             "description": "Operation successful"
           },
+          "201": {
+            "description": "Resource created"
+          },
           "400": {
             "description": "Invalid request"
           },
@@ -947,14 +893,8 @@
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -1208,23 +1148,14 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
           },
           "403": {
             "description": "Outside scope or feature not granted"
           },
-          "404": {
-            "description": "Not found or resource not owned by client"
-          },
           "405": {
             "description": "Method not allowed"
-          },
-          "409": {
-            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"
@@ -1249,9 +1180,6 @@
         "responses": {
           "200": {
             "description": "Operation successful"
-          },
-          "201": {
-            "description": "Resource created"
           },
           "400": {
             "description": "Invalid request"
@@ -1306,17 +1234,11 @@
           "200": {
             "description": "Operation successful"
           },
-          "400": {
-            "description": "Invalid request"
-          },
           "401": {
             "description": "Invalid or missing Bearer key"
           },
           "403": {
             "description": "Outside scope or feature not granted"
-          },
-          "404": {
-            "description": "Not found or resource not owned by client"
           },
           "405": {
             "description": "Method not allowed"
@@ -1346,6 +1268,9 @@
           "200": {
             "description": "Operation successful"
           },
+          "201": {
+            "description": "Resource created"
+          },
           "400": {
             "description": "Invalid request"
           },
@@ -1354,9 +1279,6 @@
           },
           "403": {
             "description": "Outside scope or feature not granted"
-          },
-          "404": {
-            "description": "Not found or resource not owned by client"
           },
           "405": {
             "description": "Method not allowed"
@@ -1423,9 +1345,6 @@
         "responses": {
           "200": {
             "description": "Operation successful"
-          },
-          "201": {
-            "description": "Resource created"
           },
           "400": {
             "description": "Invalid request"
