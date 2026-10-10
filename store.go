@@ -9,6 +9,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"unsafe"
 )
@@ -264,7 +265,9 @@ func (s *Store) Audit(owner, method, path string, status int) error {
 		return errors.New(C.GoString(C.sqlite3_errmsg(s.db)))
 	}
 	if C.sqlite3_changes(s.db) > 0 {
-		s.pruneAudit()
+		if e := s.pruneAudit(); e != nil {
+			log.Printf("audit prune failed: %v", e)
+		}
 	}
 	return nil
 }

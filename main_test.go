@@ -513,3 +513,115 @@ func TestStorePersistentOwnership(t *testing.T) {
 	}
 
 }
+
+func TestTunnelTokenRefusesConfigDrift(t *testing.T) {
+	tokenCalled := false
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/accounts/account/cfd_tunnel/t1/configurations":
+			// Live tunnel has no published ingress, but the bridge has a stored
+			// hostname: the configuration has drifted.
+			cfok(w, map[string]any{"config": map[string]any{"ingress": []any{map[string]any{"service": "http_status:404"}}}})
+		case "/accounts/account/cfd_tunnel/t1/token":
+			tokenCalled = true
+			cfok(w, "secret-connector-token")
+		default:
+			cfok(w, map[string]any{"ok": true})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel", ID: "t1", Name: "t"}); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "tunnel_host", ID: "t1|app.hermes.example.com", Name: "app.hermes.example.com", Details: `{"hostname":"app.hermes.example.com","service":"http://x"}`}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "GET", "/api/v1/tunnels/t1/token", clients[0].Key, "")
+	if w.Code != 409 {
+		t.Fatalf("token issued despite drift: %d %s", w.Code, w.Body.String())
+	}
+	if tokenCalled {
+		t.Fatal("token endpoint reached despite drift")
+	}
+}
+
+func TestRuleMatchesWorkerDestination(t *testing.T) {
+	mk := func(action string, values ...string) json.RawMessage {
+		b, _ := json.Marshal(map[string]any{
+			"matchers": []any{map[string]any{"type": "literal", "field": "to", "value": "team@hermes.example.com"}},
+			"actions":  []any{map[string]any{"type": action, "value": values}},
+		})
+		return b
+	}
+	cases := []struct {
+		name    string
+		raw     json.RawMessage
+		details string
+		want    bool
+	}{
+		{"worker match", mk("worker", "w1"), "worker:w1", true},
+		{"worker changed", mk("worker", "w2"), "worker:w1", false},
+		{"worker extra destination", mk("worker", "w1", "w2"), "worker:w1", false},
+		{"worker missing destination", mk("worker"), "worker:w1", false},
+		{"worker action change", mk("forward", "d@example.net"), "worker:w1", false},
+		{"forward match", mk("forward", "d@example.net"), "forward:d@example.net", true},
+		{"forward case-insensitive", mk("forward", "D@Example.net"), "forward:d@example.net", true},
+		{"forward extra destination", mk("forward", "d@example.net", "e@example.net"), "forward:d@example.net", false},
+		{"drop", mk("drop"), "drop:", true},
+		{"drop with destination", mk("drop", "d@example.net"), "drop:", false},
+	}
+	for _, tc := range cases {
+		if got := ruleMatchesDetails(tc.raw, tc.details); got != tc.want {
+			t.Errorf("%s: got %v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestEmailWorkerDestinationDrift(t *testing.T) {
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/zones/zone/email/routing/rules/rule1":
+			cfok(w, map[string]any{
+				"id":       "rule1",
+				"matchers": []any{map[string]any{"type": "literal", "field": "to", "value": "team@hermes.example.com"}},
+				"actions":  []any{map[string]any{"type": "worker", "value": []string{"some-other-worker"}}},
+			})
+		default:
+			cfok(w, map[string]any{})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.Put(Resource{Owner: "hermes", Kind: "email_rule", ID: "rule1", Name: "team@hermes.example.com", Details: "worker:w1"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "DELETE", "/api/v1/email/rule1", clients[0].Key, "")
+	if w.Code != 409 {
+		t.Fatalf("worker destination change not detected: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkerCreateRollsBackOnPersistFailure(t *testing.T) {
+	deleted := false
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/workers/scripts/"):
+			deleted = true
+			cfok(w, map[string]any{"ok": true})
+		case strings.HasSuffix(r.URL.Path, "/subdomain"):
+			cfok(w, map[string]any{"enabled": false})
+		default:
+			cfok(w, map[string]any{"id": "cfb-hermes-x"})
+		}
+	}
+	s, _ := newServer(t, cf)
+	if e := s.store.exec("DROP TABLE resources"); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"x","script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 502 {
+		t.Fatalf("persist failure not surfaced: %d %s", w.Code, w.Body.String())
+	}
+	if !deleted {
+		t.Fatal("orphaned Worker was not rolled back")
+	}
+}

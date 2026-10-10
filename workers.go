@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error) {
@@ -38,7 +41,14 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 				return 0, nil, bad(502, "Worker upload rolled back because disabling public workers.dev URLs failed")
 			}
 			if e := s.store.Put(Resource{Owner: c.Name, Kind: "worker", ID: id, Name: input.Label}); e != nil {
-				return 0, nil, e
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+				_, cleanup := s.cf.json(cleanupCtx, "DELETE", path, nil)
+				cancel()
+				if cleanup != nil {
+					log.Printf("worker %s created but ownership persist failed (%v) and rollback failed (%v)", id, e, cleanup)
+					return 0, nil, bad(502, "Worker uploaded but ownership could not be recorded and cleanup failed; inspect Cloudflare immediately (Worker "+id+")")
+				}
+				return 0, nil, bad(502, "Worker upload rolled back because ownership could not be recorded")
 			}
 			return 201, map[string]any{"id": id, "label": input.Label}, nil
 		}

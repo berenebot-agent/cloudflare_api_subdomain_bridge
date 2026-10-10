@@ -7,7 +7,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${BRIDGE_LISTEN_ADDR:-0.0.0.0}:${BRIDGE_PORT:-8080}:${BRIDGE_PORT:-8080}"
+      - "${BRIDGE_HOST_BIND:-127.0.0.1}:${BRIDGE_PORT:-8080}:${BRIDGE_PORT:-8080}"
     volumes:
       - ./data:/data
     read_only: true

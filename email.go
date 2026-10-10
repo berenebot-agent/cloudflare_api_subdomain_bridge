@@ -38,9 +38,11 @@ func matcherAddress(raw json.RawMessage) string {
 }
 
 // ruleMatchesDetails reports whether a live rule still matches the stored
-// "<action>:<destination>" fingerprint. Action type is always compared;
-// destination is compared for forward rules. Worker destinations are compared
-// by action only, since Cloudflare may normalise the stored script reference.
+// "<action>:<destination>" fingerprint. The action type is always compared.
+// Forward destinations are compared case-insensitively; Worker destinations are
+// compared exactly against the stored Worker ID. Any rule must have exactly one
+// action value for forward/worker (or none for drop), so an extra destination
+// added outside the bridge is treated as drift.
 func ruleMatchesDetails(raw json.RawMessage, details string) bool {
 	if details == "" {
 		return true
@@ -54,17 +56,20 @@ func ruleMatchesDetails(raw json.RawMessage, details string) bool {
 	if !strings.EqualFold(a.Type, stored[0]) {
 		return false
 	}
-	if a.Type != "forward" {
-		return true
+	storedDest := ""
+	if len(stored) > 1 {
+		storedDest = stored[1]
 	}
-	dest := ""
-	if len(a.Value) > 0 {
-		dest = a.Value[0]
+	switch strings.ToLower(a.Type) {
+	case "drop":
+		return len(a.Value) == 0
+	case "forward":
+		return len(a.Value) == 1 && strings.EqualFold(a.Value[0], storedDest)
+	case "worker":
+		return len(a.Value) == 1 && a.Value[0] == storedDest
+	default:
+		return false
 	}
-	if len(stored) < 2 {
-		return dest == ""
-	}
-	return strings.EqualFold(dest, stored[1])
 }
 func (s *Server) mailAddress(address string, c Client) error {
 	if len(address) > 90 || strings.Count(address, "@") != 1 {

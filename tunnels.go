@@ -233,6 +233,9 @@ func (s *Server) tunnels(r *http.Request, c Client, p []string) (int, any, error
 		if e = s.hostsInScope(hosts, c); e != nil {
 			return 0, nil, e
 		}
+		if e = s.verifyTunnelConfig(r, c, t.ID, hosts); e != nil {
+			return 0, nil, e
+		}
 		raw, e := s.cf.json(r.Context(), "GET", tpath+"/token", nil)
 		if e != nil {
 			return 0, nil, e
