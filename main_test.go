@@ -779,6 +779,9 @@ func TestTunnelDisabledWarpRoutingDoesNotBlock(t *testing.T) {
 			cfok(w, map[string]any{"ok": true})
 		case strings.HasSuffix(r.URL.Path, "/token"):
 			cfok(w, "secret-connector-token")
+		case r.URL.Path == "/zones/zone/dns_records/d1":
+			// Check the live CNAME when removing the published hostname.
+			cfok(w, map[string]any{"id": "d1", "name": "app.hermes.example.com", "type": "CNAME", "content": "t1.cfargotunnel.com"})
 		case strings.Contains(r.URL.Path, "/dns_records"):
 			if r.Method == "GET" {
 				cfok(w, []any{})
@@ -805,6 +808,16 @@ func TestTunnelDisabledWarpRoutingDoesNotBlock(t *testing.T) {
 	w = req(s, "GET", "/api/v1/tunnels/t1/token", clients[0].Key, "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "secret-connector-token") {
 		t.Fatalf("token blocked by disabled warp-routing: %d %s", w.Code, w.Body.String())
+	}
+
+	// A tunnel with disabled WARP routing must also support its complete cleanup.
+	w = req(s, "DELETE", "/api/v1/tunnels/t1/hostnames/app.hermes.example.com", clients[0].Key, "")
+	if w.Code != 200 {
+		t.Fatalf("unpublish blocked by disabled warp-routing: %d %s", w.Code, w.Body.String())
+	}
+	w = req(s, "DELETE", "/api/v1/tunnels/t1", clients[0].Key, "")
+	if w.Code != 200 {
+		t.Fatalf("delete blocked by disabled warp-routing: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -850,7 +863,10 @@ func TestWarpRoutingEnabledShapes(t *testing.T) {
 		{`{"enabled":true}`, true},
 		{`{"enabled":false,"unknown":1}`, false},
 		{`{"enabled":true,"unknown":1}`, true},
-		{`"unexpected"`, true}, // unrecognised shape fails closed
+		{`{"unexpected_setting":true}`, true}, // enabled field missing: fail closed
+		{`{"enabled":null}`, true},             // null is not disabled
+		{`{"enabled":"false"}`, true},          // malformed boolean: fail closed
+		{`"unexpected"`, true},                // unrecognised shape fails closed
 	}
 	for _, c := range cases {
 		if got := warpRoutingEnabled(json.RawMessage(c.raw)); got != c.want {
