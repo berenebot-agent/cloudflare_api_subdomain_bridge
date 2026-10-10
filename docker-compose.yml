@@ -1,0 +1,24 @@
+services:
+  cloudflare-bridge:
+    build: .
+    image: cloudflare-subdomain-bridge:local
+    container_name: ${BRIDGE_CONTAINER_NAME:-cloudflare-bridge}
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${BRIDGE_HOST_BIND:-127.0.0.1}:${BRIDGE_PORT:-8080}:${BRIDGE_PORT:-8080}"
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/bridge", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
