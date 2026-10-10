@@ -30,6 +30,7 @@ COMMON_ERRORS = {
 ME = {'401', '405', '429'}
 READ = {'401', '403', '405', '429', '502'}
 READ_ID = {'400', '401', '403', '404', '405', '429', '502'}
+READ_ID_409 = {'400', '401', '403', '404', '405', '409', '429', '502'}
 CREATE = {'400', '401', '403', '405', '429', '502'}
 CREATE_409 = {'400', '401', '403', '405', '409', '429', '502'}
 MUT_ID = {'400', '401', '403', '404', '405', '409', '429', '502'}
@@ -99,7 +100,7 @@ op('/api/v1/dns', 'POST', 'Create scoped DNS record', 'DNS', CREATE_409, create=
    body=['name', 'type', 'content', 'ttl', 'proxied', 'priority'],
    required=['name', 'type', 'content'],
    example={'name': 'app.hermes.example.com', 'type': 'A', 'content': '198.51.100.10', 'ttl': 1})
-op('/api/v1/dns/{id}', 'GET', 'Read DNS record after current-name scope check', 'DNS', READ_ID)
+op('/api/v1/dns/{id}', 'GET', 'Read DNS record after current-name scope check', 'DNS', READ_ID_409)
 op('/api/v1/dns/{id}', 'PATCH', 'Replace DNS record; old and new names checked', 'DNS', MUT_ID,
    body=['name', 'type', 'content', 'ttl', 'proxied', 'priority'],
    required=['name', 'type', 'content'])
@@ -109,7 +110,7 @@ op('/api/v1/tunnels', 'POST', 'Create remotely managed dedicated tunnel', 'Tunne
    body=['name'], required=['name'], example={'name': 'backend'})
 op('/api/v1/tunnels/{id}', 'GET', 'Read owned tunnel information', 'Tunnels', READ_ID)
 op('/api/v1/tunnels/{id}', 'DELETE', 'Delete empty owned tunnel', 'Tunnels', MUT_ID)
-op('/api/v1/tunnels/{id}/token', 'GET', 'Retrieve connector token for owned tunnel; sensitive', 'Tunnels', READ_ID)
+op('/api/v1/tunnels/{id}/token', 'GET', 'Retrieve connector token for owned tunnel; sensitive', 'Tunnels', READ_ID_409)
 op('/api/v1/tunnels/{id}/hostnames', 'GET', 'List managed ingress hostnames on tunnel', 'Tunnels', READ_ID)
 op('/api/v1/tunnels/{id}/hostnames', 'POST', 'Publish scoped hostname; create proxied CNAME and ingress', 'Tunnels', MUT_ID, create=True,
    body=['hostname', 'service'], required=['hostname', 'service'],

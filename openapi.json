@@ -227,6 +227,9 @@
           "405": {
             "description": "Method not allowed"
           },
+          "409": {
+            "description": "Resource conflict or configuration drift"
+          },
           "429": {
             "description": "Rate limit exceeded"
           },
@@ -616,6 +619,9 @@
           },
           "405": {
             "description": "Method not allowed"
+          },
+          "409": {
+            "description": "Resource conflict or configuration drift"
           },
           "429": {
             "description": "Rate limit exceeded"

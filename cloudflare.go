@@ -32,16 +32,38 @@ type cfEnvelope struct {
 	} `json:"result_info"`
 }
 
-// upstreamError carries the HTTP status Cloudflare returned so callers can
-// distinguish "the resource does not exist" (404) from a genuine upstream or
-// network failure. Without it every rejection collapses into a generic error
-// and surfaces to the client as 502.
+// upstreamError carries the HTTP status and Cloudflare error codes so callers
+// can distinguish "the resource does not exist" (404) or an explicit conflict
+// from a genuine upstream or network failure. Without it every rejection
+// collapses into a generic error and surfaces to the client as 502.
 type upstreamError struct {
 	Status int
+	Codes  []int
 	Msg    string
 }
 
 func (e upstreamError) Error() string { return e.Msg }
+
+// upstreamConflict reports whether an upstream rejection is an explicit
+// duplicate/conflict rather than a generic fault. Cloudflare signals this with
+// HTTP 409 or its "record already exists" codes; only those become a client
+// 409, so other write failures are not mislabelled as collisions.
+func upstreamConflict(e error) bool {
+	var ue upstreamError
+	if !errors.As(e, &ue) {
+		return false
+	}
+	if ue.Status == 409 {
+		return true
+	}
+	for _, c := range ue.Codes {
+		switch c {
+		case 81057, 81058:
+			return true
+		}
+	}
+	return false
+}
 
 func (cf *Cloudflare) call(ctx context.Context, method, path, ct string, body []byte) (json.RawMessage, error) {
 	if cf.Client == nil {
@@ -76,10 +98,12 @@ func (cf *Cloudflare) call(ctx context.Context, method, path, ct string, body []
 	}
 	if resp.StatusCode >= 300 || !v.Success {
 		msgs := []string{}
+		codes := []int{}
 		for _, issue := range v.Errors {
 			msgs = append(msgs, fmt.Sprintf("%d: %s", issue.Code, issue.Message))
+			codes = append(codes, issue.Code)
 		}
-		return nil, upstreamError{Status: resp.StatusCode, Msg: fmt.Sprintf("Cloudflare request rejected (status %d): %s", resp.StatusCode, strings.Join(msgs, "; "))}
+		return nil, upstreamError{Status: resp.StatusCode, Codes: codes, Msg: fmt.Sprintf("Cloudflare request rejected (status %d): %s", resp.StatusCode, strings.Join(msgs, "; "))}
 	}
 	return v.Result, nil
 }
