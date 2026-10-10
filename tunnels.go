@@ -77,6 +77,26 @@ func set(raw json.RawMessage) bool {
 	return s != "" && s != "null" && s != "{}" && s != "[]"
 }
 
+// warpRoutingEnabled reports whether the tunnel's warp-routing is actually on.
+// Cloudflare returns the field for every remotely-managed tunnel — an untouched
+// tunnel reports {"enabled": false} — so the mere presence of the key is not
+// evidence the tunnel was changed outside the bridge. Only an enabled value
+// blocks; an unrecognised shape fails closed so an unexpected configuration is
+// never silently ignored.
+func warpRoutingEnabled(raw json.RawMessage) bool {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" || s == "{}" || s == "[]" {
+		return false
+	}
+	var cfg struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
+}
+
 func (s *Server) fetchTunnelConfig(r *http.Request, id string) (tunnelConfig, error) {
 	var actual tunnelConfig
 	raw, e := s.cf.json(r.Context(), "GET", s.account("/cfd_tunnel/"+enc(id)+"/configurations"), nil)
@@ -117,7 +137,7 @@ func (s *Server) configMatches(r *http.Request, id string, hosts []TunnelHost) (
 		}
 		delete(expected, item.Hostname)
 	}
-	if len(expected) > 0 || set(actual.Config.OriginRequest) || set(actual.Config.WarpRouting) {
+	if len(expected) > 0 || set(actual.Config.OriginRequest) || warpRoutingEnabled(actual.Config.WarpRouting) {
 		return false, nil
 	}
 	return true, nil
@@ -146,7 +166,7 @@ func (s *Server) tunnelLiveEmpty(r *http.Request, id string) error {
 			return bad(409, "tunnel has live ingress not managed by the bridge; reconcile in Cloudflare")
 		}
 	}
-	if set(actual.Config.WarpRouting) {
+	if warpRoutingEnabled(actual.Config.WarpRouting) {
 		return bad(409, "tunnel has warp-routing enabled; reconcile in Cloudflare")
 	}
 	return nil
