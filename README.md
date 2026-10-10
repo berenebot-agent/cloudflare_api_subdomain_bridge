@@ -13,7 +13,9 @@ at the edge.
 > has **not** been end-to-end tested against a live account. Try it on a test
 > zone first, especially for Workers, tunnels, and email.
 
-![How the bridge scopes access](docs/bridge-scope.svg)
+![Agent requests go through the bridge: permitted subdomains pass, unrelated domains are blocked](docs/bridge-scope.svg)
+
+*Example: a client scoped to `hermes.example.com` may manage `app.hermes.example.com`, but not `other.example.com`.*
 
 ## Why it exists
 
