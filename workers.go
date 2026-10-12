@@ -10,17 +10,18 @@ import (
 	"time"
 )
 
-// workerNameAvailable checks both the global ownership ledger and the live
-// account-wide Worker list *before* uploading. The upload also sends a
-// conditional create-only header, closing the preflight-to-PUT race if the
-// Cloudflare endpoint honours its If-None-Match contract.
+// workerNameAvailable rejects names claimed by an existing bridge Worker or
+// by another account-level Cloudflare Worker. It is a preflight: the actual
+// reservation uses Cloudflare's POST Create Worker endpoint, not upsert PUT.
 func (s *Server) workerNameAvailable(ctx context.Context, name string) error {
 	managed, e := s.store.ListAll()
 	if e != nil {
 		return e // Fail closed if ownership cannot be checked.
 	}
 	for _, item := range managed {
-		if item.ID == name {
+		// Previous bridge versions used an opaque Worker ID with the chosen
+		// label stored in Name. Reserve those labels as well.
+		if item.Kind == "worker" && (item.ID == name || item.Name == name) {
 			return bad(409, "Worker name is already in use")
 		}
 	}
@@ -69,12 +70,36 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 				return 0, nil, e
 			}
 			path := base + "/" + enc(cfName)
-			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script, true); e != nil {
+			// Reserve the exact name atomically with Cloudflare's CREATE API.
+			// A Worker script PUT is an upsert and MUST NOT be used to reserve
+			// names because it can overwrite an unrelated Worker.
+			reservation, e := s.cf.json(r.Context(), "POST", s.account("/workers/workers"),
+				map[string]any{"name": cfName, "subdomain": map[string]any{"enabled": false, "previews_enabled": false}})
+			if e != nil {
 				var ue upstreamError
-				if errors.As(e, &ue) && (ue.Status == http.StatusPreconditionFailed || ue.Status == http.StatusConflict) {
+				if errors.As(e, &ue) && (ue.Status == http.StatusConflict || ue.Status == http.StatusPreconditionFailed) {
 					return 0, nil, bad(409, "Worker name is already in use")
 				}
-				return 0, nil, e
+				return 0, nil, e // Never delete anything when reservation fails.
+			}
+			var reserved struct {
+				ID string `json:"id"`
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(reservation, &reserved) != nil || reserved.ID == "" || reserved.Name != cfName {
+				return 0, nil, bad(502, "Worker name reserved but Cloudflare returned unexpected identity; reconcile in Cloudflare")
+			}
+			// Only the Worker created by the successful reservation is eligible
+			// for rollback; if upload fails, remove that newly created Worker.
+			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script, false); e != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+				_, cleanup := s.cf.json(cleanupCtx, "DELETE", path, nil)
+				cancel()
+				if cleanup != nil {
+					log.Printf("reserved worker %s upload failed (%v), rollback failed (%v)", cfName, e, cleanup)
+					return 0, nil, bad(502, "Worker reserved but upload and cleanup failed; inspect Cloudflare immediately (Worker "+cfName+")")
+				}
+				return 0, nil, bad(502, "Worker upload failed and newly reserved Worker was rolled back")
 			}
 			if _, e := s.cf.json(r.Context(), "POST", path+"/subdomain", map[string]any{"enabled": false, "previews_enabled": false}); e != nil {
 				_, cleanup := s.cf.json(r.Context(), "DELETE", path, nil)
