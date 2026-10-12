@@ -260,20 +260,22 @@ func TestEmailPaginationPageSize(t *testing.T) {
 }
 
 func TestWorkerUploadsUnderItsLabel(t *testing.T) {
-	// The Worker's name in Cloudflare must be the label the operator chose, not
-	// a generated id: an opaque name is unreadable in the dashboard, and the
-	// generated form is not something a caller can address later.
-	var uploadPath, subdomainPath string
+	// Retain the operator's chosen name, but create it conditionally.
+	var uploadPath, subdomainPath, ifNoneMatch string
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
+			cfok(w, []any{})
 		case strings.HasSuffix(r.URL.Path, "/subdomain"):
 			subdomainPath = r.URL.Path
 			cfok(w, map[string]any{"enabled": false})
-		case strings.Contains(r.URL.Path, "/workers/scripts/"):
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
 			uploadPath = r.URL.Path
+			ifNoneMatch = r.Header.Get("If-None-Match")
 			cfok(w, map[string]any{"id": "email-sonnyxiatnet"})
 		default:
-			cfok(w, map[string]any{"id": "id123"})
+			t.Errorf("unexpected Cloudflare call %s %s", r.Method, r.URL.Path)
+			cfok(w, map[string]any{"id": "unexpected"})
 		}
 	}
 	s, _ := newServer(t, cf)
@@ -282,13 +284,12 @@ func TestWorkerUploadsUnderItsLabel(t *testing.T) {
 		t.Fatalf("worker create failed: %d %s", w.Code, w.Body.String())
 	}
 	want := "/accounts/account/workers/scripts/email-sonnyxiatnet"
-	if uploadPath != want {
-		t.Errorf("uploaded under %q, want %q", uploadPath, want)
+	if uploadPath != want || ifNoneMatch != "*" {
+		t.Errorf("unsafe create: path=%q conditional=%q", uploadPath, ifNoneMatch)
 	}
 	if subdomainPath != want+"/subdomain" {
 		t.Errorf("disabled public URL at %q, want %q", subdomainPath, want+"/subdomain")
 	}
-	// The id returned is the label, so the caller can address the worker it made.
 	var body struct {
 		ID string `json:"id"`
 	}
@@ -590,7 +591,7 @@ func TestTunnelOwnershipAndToken(t *testing.T) {
 func TestWorkerAndEmailOwnership(t *testing.T) {
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/zones/zone/workers/routes", "/zones/zone/email/routing/rules":
+		case "/zones/zone/workers/routes", "/zones/zone/email/routing/rules", "/accounts/account/workers/scripts":
 			cfok(w, []any{})
 		case "/accounts/account/workers/scripts/cfb-hermes-123/subdomain":
 			cfok(w, map[string]any{"enabled": false})
@@ -757,27 +758,34 @@ func TestEmailWorkerDestinationDrift(t *testing.T) {
 
 func TestWorkerCreateRollsBackOnPersistFailure(t *testing.T) {
 	deleted := false
+	var s *Server
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
+			cfok(w, []any{})
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/workers/scripts/"):
 			deleted = true
 			cfok(w, map[string]any{"ok": true})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
+			// Simulate SQLite failing after preflight, before ownership persistence.
+			if e := s.store.exec("DROP TABLE resources"); e != nil {
+				t.Error(e)
+			}
+			cfok(w, map[string]any{"id": "x"})
 		case strings.HasSuffix(r.URL.Path, "/subdomain"):
 			cfok(w, map[string]any{"enabled": false})
 		default:
-			cfok(w, map[string]any{"id": "cfb-hermes-x"})
+			t.Errorf("unexpected Cloudflare call %s %s", r.Method, r.URL.Path)
+			cfok(w, map[string]any{"id": "unexpected"})
 		}
 	}
-	s, _ := newServer(t, cf)
-	if e := s.store.exec("DROP TABLE resources"); e != nil {
-		t.Fatal(e)
-	}
+	s, _ = newServer(t, cf)
 	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"x","script":"export default {fetch(){return new Response('hi')}}"}`)
 	if w.Code != 502 {
 		t.Fatalf("persist failure not surfaced: %d %s", w.Code, w.Body.String())
 	}
 	if !deleted {
-		t.Fatal("orphaned Worker was not rolled back")
+		t.Fatal("orphaned newly created Worker was not rolled back")
 	}
 }
 
