@@ -259,6 +259,47 @@ func TestEmailPaginationPageSize(t *testing.T) {
 	}
 }
 
+func TestWorkerUploadsUnderItsLabel(t *testing.T) {
+	// The Worker's name in Cloudflare must be the label the operator chose, not
+	// a generated id: an opaque name is unreadable in the dashboard, and the
+	// generated form is not something a caller can address later.
+	var uploadPath, subdomainPath string
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/subdomain"):
+			subdomainPath = r.URL.Path
+			cfok(w, map[string]any{"enabled": false})
+		case strings.Contains(r.URL.Path, "/workers/scripts/"):
+			uploadPath = r.URL.Path
+			cfok(w, map[string]any{"id": "email-sonnyxiatnet"})
+		default:
+			cfok(w, map[string]any{"id": "id123"})
+		}
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"email-sonnyxiatnet","script":"export default {fetch(){return new Response('ok')}}"}`)
+	if w.Code != 201 {
+		t.Fatalf("worker create failed: %d %s", w.Code, w.Body.String())
+	}
+	want := "/accounts/account/workers/scripts/email-sonnyxiatnet"
+	if uploadPath != want {
+		t.Errorf("uploaded under %q, want %q", uploadPath, want)
+	}
+	if subdomainPath != want+"/subdomain" {
+		t.Errorf("disabled public URL at %q, want %q", subdomainPath, want+"/subdomain")
+	}
+	// The id returned is the label, so the caller can address the worker it made.
+	var body struct {
+		ID string `json:"id"`
+	}
+	if e := json.Unmarshal(w.Body.Bytes(), &body); e != nil {
+		t.Fatal(e)
+	}
+	if body.ID != "email-sonnyxiatnet" {
+		t.Errorf("created id = %q, want the label", body.ID)
+	}
+}
+
 func TestWorkerMockRejectsUnexpected(t *testing.T) {
 	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -28,8 +27,12 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 			if !idPattern.MatchString(input.Label) || len(input.Script) == 0 || len(input.Script) > 512*1024 {
 				return 0, nil, bad(400, "label must be an identifier and script must be 1..524288 bytes")
 			}
-			id := "cfb-" + strings.ReplaceAll(c.Name, "_", "-") + "-" + randomID()
-			path := base + "/" + enc(id)
+			// Upload under the label, so the Worker's name in Cloudflare is the
+			// one the operator chose rather than an opaque generated id. The
+			// store keys the worker by the same label and every path addresses
+			// it by that key, so route/rule references are unaffected.
+			cfName := input.Label
+			path := base + "/" + enc(cfName)
 			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script); e != nil {
 				return 0, nil, e
 			}
@@ -40,17 +43,17 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 				}
 				return 0, nil, bad(502, "Worker upload rolled back because disabling public workers.dev URLs failed")
 			}
-			if e := s.store.Put(Resource{Owner: c.Name, Kind: "worker", ID: id, Name: input.Label}); e != nil {
+			if e := s.store.Put(Resource{Owner: c.Name, Kind: "worker", ID: input.Label, Name: cfName}); e != nil {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 				_, cleanup := s.cf.json(cleanupCtx, "DELETE", path, nil)
 				cancel()
 				if cleanup != nil {
-					log.Printf("worker %s created but ownership persist failed (%v) and rollback failed (%v)", id, e, cleanup)
-					return 0, nil, bad(502, "Worker uploaded but ownership could not be recorded and cleanup failed; inspect Cloudflare immediately (Worker "+id+")")
+					log.Printf("worker %s created but ownership persist failed (%v) and rollback failed (%v)", input.Label, e, cleanup)
+					return 0, nil, bad(502, "Worker uploaded but ownership could not be recorded and cleanup failed; inspect Cloudflare immediately (Worker "+input.Label+")")
 				}
 				return 0, nil, bad(502, "Worker upload rolled back because ownership could not be recorded")
 			}
-			return 201, map[string]any{"id": id, "label": input.Label}, nil
+			return 201, map[string]any{"id": input.Label, "label": input.Label}, nil
 		}
 		return 0, nil, bad(405, "method not allowed")
 	}
