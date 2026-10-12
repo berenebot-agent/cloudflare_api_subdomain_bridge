@@ -3,10 +3,44 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 )
+
+// workerNameAvailable checks both the global ownership ledger and the live
+// account-wide Worker list *before* uploading. The upload also sends a
+// conditional create-only header, closing the preflight-to-PUT race if the
+// Cloudflare endpoint honours its If-None-Match contract.
+func (s *Server) workerNameAvailable(ctx context.Context, name string) error {
+	managed, e := s.store.ListAll()
+	if e != nil {
+		return e // Fail closed if ownership cannot be checked.
+	}
+	for _, item := range managed {
+		if item.ID == name {
+			return bad(409, "Worker name is already in use")
+		}
+	}
+	live, e := s.cf.all(ctx, s.account("/workers/scripts"))
+	if e != nil {
+		return e // Never attempt an upload if account-wide discovery fails.
+	}
+	for _, raw := range live {
+		var script struct {
+			ID string `json:"id"`
+		}
+		if e := json.Unmarshal(raw, &script); e != nil || script.ID == "" {
+			return fmt.Errorf("Cloudflare returned an invalid Worker listing")
+		}
+		if script.ID == name {
+			return bad(409, "Worker name is already in use")
+		}
+	}
+	return nil
+}
 
 func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error) {
 	base := s.account("/workers/scripts")
@@ -27,13 +61,19 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 			if !idPattern.MatchString(input.Label) || len(input.Script) == 0 || len(input.Script) > 512*1024 {
 				return 0, nil, bad(400, "label must be an identifier and script must be 1..524288 bytes")
 			}
-			// Upload under the label, so the Worker's name in Cloudflare is the
-			// one the operator chose rather than an opaque generated id. The
-			// store keys the worker by the same label and every path addresses
-			// it by that key, so route/rule references are unaffected.
+			// Retain the exact human-readable name the caller picked, but NEVER
+			// let POST behave as an upsert: it could replace another client's (or
+			// an unrelated account owner's) Worker before SQLite detects it.
 			cfName := input.Label
+			if e := s.workerNameAvailable(r.Context(), cfName); e != nil {
+				return 0, nil, e
+			}
 			path := base + "/" + enc(cfName)
-			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script); e != nil {
+			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script, true); e != nil {
+				var ue upstreamError
+				if errors.As(e, &ue) && (ue.Status == http.StatusPreconditionFailed || ue.Status == http.StatusConflict) {
+					return 0, nil, bad(409, "Worker name is already in use")
+				}
 				return 0, nil, e
 			}
 			if _, e := s.cf.json(r.Context(), "POST", path+"/subdomain", map[string]any{"enabled": false, "previews_enabled": false}); e != nil {
@@ -155,7 +195,7 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 		if e = s.workerRoutesInScope(r, c, worker.ID); e != nil {
 			return 0, nil, e
 		}
-		if _, e := s.cf.uploadWorker(r.Context(), wpath, input.Script); e != nil {
+		if _, e := s.cf.uploadWorker(r.Context(), wpath, input.Script, false); e != nil {
 			return 0, nil, e
 		}
 		if _, e := s.cf.json(r.Context(), "POST", wpath+"/subdomain", map[string]any{"enabled": false, "previews_enabled": false}); e != nil {
