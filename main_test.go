@@ -260,18 +260,22 @@ func TestEmailPaginationPageSize(t *testing.T) {
 }
 
 func TestWorkerUploadsUnderItsLabel(t *testing.T) {
-	// Retain the operator's chosen name, but create it conditionally.
-	var uploadPath, subdomainPath, ifNoneMatch string
+	// Retain the exact operator-selected name, reserving it before upload.
+	var uploadPath, subdomainPath, reservedName string
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
 			cfok(w, []any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/account/workers/workers":
+			var v struct{ Name string `json:"name"` }
+			_ = json.NewDecoder(r.Body).Decode(&v)
+			reservedName = v.Name
+			cfok(w, map[string]any{"id": "immutable-new-worker-id", "name": v.Name})
 		case strings.HasSuffix(r.URL.Path, "/subdomain"):
 			subdomainPath = r.URL.Path
 			cfok(w, map[string]any{"enabled": false})
 		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
 			uploadPath = r.URL.Path
-			ifNoneMatch = r.Header.Get("If-None-Match")
 			cfok(w, map[string]any{"id": "email-sonnyxiatnet"})
 		default:
 			t.Errorf("unexpected Cloudflare call %s %s", r.Method, r.URL.Path)
@@ -284,8 +288,8 @@ func TestWorkerUploadsUnderItsLabel(t *testing.T) {
 		t.Fatalf("worker create failed: %d %s", w.Code, w.Body.String())
 	}
 	want := "/accounts/account/workers/scripts/email-sonnyxiatnet"
-	if uploadPath != want || ifNoneMatch != "*" {
-		t.Errorf("unsafe create: path=%q conditional=%q", uploadPath, ifNoneMatch)
+	if uploadPath != want || reservedName != "email-sonnyxiatnet" {
+		t.Errorf("unsafe create: upload=%q reservation=%q", uploadPath, reservedName)
 	}
 	if subdomainPath != want+"/subdomain" {
 		t.Errorf("disabled public URL at %q, want %q", subdomainPath, want+"/subdomain")
@@ -336,24 +340,22 @@ func TestWorkerCreateRejectsStoredNameCollision(t *testing.T) {
 	}
 }
 
-// Simulate another account administrator creating a Worker after the
-// preflight GET but before the conditional PUT. Refusal must never run DELETE.
-func TestWorkerCreatePreconditionFailureNeverDeletesForeignWorker(t *testing.T) {
-	puts, deletes := 0, 0
+// A competing Worker created after the list preflight must be rejected by
+// Cloudflare's dedicated CREATE endpoint, without uploading or deleting it.
+func TestWorkerCreateReservationConflictNeverOverwritesOrDeletes(t *testing.T) {
+	uploads, deletes, reservations := 0, 0, 0
 	cf := func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
 			cfok(w, []any{})
-		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
-			puts++
-			if r.Header.Get("If-None-Match") != "*" {
-				t.Error("create-only upload missing conditional header")
-			}
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/account/workers/workers":
+			reservations++
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusPreconditionFailed)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"success": false, "errors": []any{map[string]any{"code": 412, "message": "already exists"}},
-			})
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "errors": []any{map[string]any{"code": 10020, "message": "Worker name exists"}}})
+		case r.Method == http.MethodPut:
+			uploads++
+			cfok(w, map[string]any{"id": "unexpected"})
 		case r.Method == http.MethodDelete:
 			deletes++
 			cfok(w, map[string]any{"deleted": true})
@@ -364,8 +366,36 @@ func TestWorkerCreatePreconditionFailureNeverDeletesForeignWorker(t *testing.T) 
 	}
 	s, _ := newServer(t, cf)
 	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"raced-worker","script":"export default {fetch(){return new Response('hi')}}"}`)
-	if w.Code != 409 || puts != 1 || deletes != 0 {
-		t.Fatalf("unsafe conflict: code=%d uploads=%d deletes=%d", w.Code, puts, deletes)
+	if w.Code != 409 || reservations != 1 || uploads != 0 || deletes != 0 {
+		t.Fatalf("reservation failure unsafe: code=%d reserves=%d uploads=%d deletes=%d", w.Code, reservations, uploads, deletes)
+	}
+}
+
+func TestWorkerCreateFailedUploadRollsBackReservation(t *testing.T) {
+	uploads, deletes := 0, 0
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
+			cfok(w, []any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/account/workers/workers":
+			cfok(w, map[string]any{"id": "unique-reservation", "name": "chosen-name"})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
+			uploads++
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "errors": []any{map[string]any{"code": 1000, "message": "bad upload"}}})
+		case r.Method == http.MethodDelete && r.URL.Path == "/accounts/account/workers/scripts/chosen-name":
+			deletes++
+			cfok(w, map[string]any{"ok": true})
+		default:
+			t.Errorf("unexpected Cloudflare request %s %s", r.Method, r.URL.Path)
+			cfok(w, map[string]any{})
+		}
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"chosen-name","script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 502 || uploads != 1 || deletes != 1 {
+		t.Fatalf("reservation rollback unsafe: code=%d uploads=%d deletes=%d", w.Code, uploads, deletes)
 	}
 }
 
@@ -680,6 +710,8 @@ func TestWorkerAndEmailOwnership(t *testing.T) {
 		switch r.URL.Path {
 		case "/zones/zone/workers/routes", "/zones/zone/email/routing/rules", "/accounts/account/workers/scripts":
 			cfok(w, []any{})
+		case "/accounts/account/workers/workers":
+			cfok(w, map[string]any{"id": "immutable-new-worker-id", "name": "hello"})
 		case "/accounts/account/workers/scripts/cfb-hermes-123/subdomain":
 			cfok(w, map[string]any{"enabled": false})
 		default:
@@ -850,6 +882,8 @@ func TestWorkerCreateRollsBackOnPersistFailure(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
 			cfok(w, []any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/account/workers/workers":
+			cfok(w, map[string]any{"id": "immutable-new-worker-id", "name": "x"})
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/workers/scripts/"):
 			deleted = true
 			cfok(w, map[string]any{"ok": true})
