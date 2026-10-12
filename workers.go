@@ -91,7 +91,7 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 			}
 			// Only the Worker created by the successful reservation is eligible
 			// for rollback; if upload fails, remove that newly created Worker.
-			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script, false); e != nil {
+			if _, e := s.cf.uploadWorker(r.Context(), path, input.Script); e != nil {
 				cleanupCtx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 				_, cleanup := s.cf.json(cleanupCtx, "DELETE", path, nil)
 				cancel()
@@ -220,7 +220,7 @@ func (s *Server) workers(r *http.Request, c Client, p []string) (int, any, error
 		if e = s.workerRoutesInScope(r, c, worker.ID); e != nil {
 			return 0, nil, e
 		}
-		if _, e := s.cf.uploadWorker(r.Context(), wpath, input.Script, false); e != nil {
+		if _, e := s.cf.uploadWorker(r.Context(), wpath, input.Script); e != nil {
 			return 0, nil, e
 		}
 		if _, e := s.cf.json(r.Context(), "POST", wpath+"/subdomain", map[string]any{"enabled": false, "previews_enabled": false}); e != nil {
