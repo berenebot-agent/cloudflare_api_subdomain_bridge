@@ -66,12 +66,6 @@ func upstreamConflict(e error) bool {
 }
 
 func (cf *Cloudflare) call(ctx context.Context, method, path, ct string, body []byte) (json.RawMessage, error) {
-	return cf.callWithHeaders(ctx, method, path, ct, body, nil)
-}
-
-// callWithHeaders is used for create-only Worker uploads. A conditional header
-// prevents a script PUT from silently replacing an existing account-wide Worker.
-func (cf *Cloudflare) callWithHeaders(ctx context.Context, method, path, ct string, body []byte, extra http.Header) (json.RawMessage, error) {
 	if cf.Client == nil {
 		cf.Client = &http.Client{Timeout: 25 * time.Second}
 	}
@@ -85,11 +79,6 @@ func (cf *Cloudflare) callWithHeaders(ctx context.Context, method, path, ct stri
 	req.Header.Set("Authorization", "Bearer "+cf.Token)
 	if ct != "" {
 		req.Header.Set("Content-Type", ct)
-	}
-	for name, values := range extra {
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
 	}
 	resp, e := cf.Client.Do(req)
 	if e != nil {
@@ -175,7 +164,7 @@ func (cf *Cloudflare) allWithPageSize(ctx context.Context, path string, perPage 
 	}
 	return nil, errors.New("Cloudflare pagination cap exceeded")
 }
-func (cf *Cloudflare) uploadWorker(ctx context.Context, path, script string, createOnly bool) (json.RawMessage, error) {
+func (cf *Cloudflare) uploadWorker(ctx context.Context, path, script string) (json.RawMessage, error) {
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)
 	meta, _ := json.Marshal(map[string]any{"main_module": "main.mjs", "bindings": []any{}, "compatibility_date": "2026-09-01"})
@@ -188,11 +177,6 @@ func (cf *Cloudflare) uploadWorker(ctx context.Context, path, script string, cre
 	p, _ = w.CreatePart(header)
 	p.Write([]byte(script))
 	w.Close()
-	if createOnly {
-		h := make(http.Header)
-		h.Set("If-None-Match", "*")
-		return cf.callWithHeaders(ctx, "PUT", path, w.FormDataContentType(), b.Bytes(), h)
-	}
 	return cf.call(ctx, "PUT", path, w.FormDataContentType(), b.Bytes())
 }
 func enc(s string) string { return url.PathEscape(s) }
