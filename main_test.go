@@ -301,6 +301,93 @@ func TestWorkerUploadsUnderItsLabel(t *testing.T) {
 	}
 }
 
+// A client cannot overwrite an unmanaged or foreign Cloudflare Worker by
+// supplying its name as the label. No mutating request may reach Cloudflare.
+func TestWorkerCreateRejectsExistingCloudflareWorker(t *testing.T) {
+	mutations := 0
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts" {
+			cfok(w, []any{map[string]any{"id": "existing-production-worker"}})
+			return
+		}
+		mutations++
+		cfok(w, map[string]any{"id": "unexpected"})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"existing-production-worker","script":"export default {fetch(){return new Response('overwrite')}}"}`)
+	if w.Code != 409 || mutations != 0 {
+		t.Fatalf("existing account Worker not protected: code=%d mutations=%d", w.Code, mutations)
+	}
+}
+
+func TestWorkerCreateRejectsStoredNameCollision(t *testing.T) {
+	upstreamCalls := 0
+	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		cfok(w, []any{})
+	})
+	// Another client already owns this script in the ledger.
+	if e := s.store.Put(Resource{Owner: "mail", Kind: "worker", ID: "shared-worker", Name: "shared-worker"}); e != nil {
+		t.Fatal(e)
+	}
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"shared-worker","script":"export default {fetch(){return new Response('overwrite')}}"}`)
+	if w.Code != 409 || upstreamCalls != 0 {
+		t.Fatalf("owned Worker collision not rejected: code=%d calls=%d", w.Code, upstreamCalls)
+	}
+}
+
+// Simulate another account administrator creating a Worker after the
+// preflight GET but before the conditional PUT. Refusal must never run DELETE.
+func TestWorkerCreatePreconditionFailureNeverDeletesForeignWorker(t *testing.T) {
+	puts, deletes := 0, 0
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts/account/workers/scripts":
+			cfok(w, []any{})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/workers/scripts/"):
+			puts++
+			if r.Header.Get("If-None-Match") != "*" {
+				t.Error("create-only upload missing conditional header")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": false, "errors": []any{map[string]any{"code": 412, "message": "already exists"}},
+			})
+		case r.Method == http.MethodDelete:
+			deletes++
+			cfok(w, map[string]any{"deleted": true})
+		default:
+			t.Errorf("unexpected Cloudflare request %s %s", r.Method, r.URL.Path)
+			cfok(w, map[string]any{})
+		}
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"raced-worker","script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 409 || puts != 1 || deletes != 0 {
+		t.Fatalf("unsafe conflict: code=%d uploads=%d deletes=%d", w.Code, puts, deletes)
+	}
+}
+
+func TestWorkerCreateFailsClosedWhenListUnavailable(t *testing.T) {
+	writes := 0
+	cf := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writes++
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": false, "errors": []any{map[string]any{"code": 9109, "message": "no list permission"}},
+		})
+	}
+	s, _ := newServer(t, cf)
+	w := req(s, "POST", "/api/v1/workers", clients[0].Key, `{"label":"new-worker","script":"export default {fetch(){return new Response('hi')}}"}`)
+	if w.Code != 502 || writes != 0 {
+		t.Fatalf("Worker upload attempted without collision check: code=%d writes=%d", w.Code, writes)
+	}
+}
+
 func TestWorkerMockRejectsUnexpected(t *testing.T) {
 	s, _ := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
