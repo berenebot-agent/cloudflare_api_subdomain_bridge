@@ -1,7 +1,6 @@
 services:
   cloudflare-bridge:
-    build: .
-    image: cloudflare-subdomain-bridge:local
+    image: ghcr.io/dellarb/cloudflare_api_subdomain_bridge:${BRIDGE_IMAGE_TAG:-latest}
     container_name: ${BRIDGE_CONTAINER_NAME:-cloudflare-bridge}
     restart: unless-stopped
     env_file:

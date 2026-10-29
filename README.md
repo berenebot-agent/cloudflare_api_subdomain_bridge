@@ -51,7 +51,9 @@ Plus `/docs` (built-in interactive API browser), `/openapi.json` (OpenAPI 3.1),
 
 ```bash
 mkdir -p /opt/cloudflare-bridge && cd /opt/cloudflare-bridge
-# Unzip the repository files here, then:
+# Download the Compose file and example environment.
+curl -fsSLO https://raw.githubusercontent.com/dellarb/cloudflare_api_subdomain_bridge/main/docker-compose.yml
+curl -fsSLo .env.example https://raw.githubusercontent.com/dellarb/cloudflare_api_subdomain_bridge/main/.env.example
 cp .env.example .env
 chmod 600 .env
 
@@ -59,9 +61,15 @@ chmod 600 .env
 # Generate each client key with:  openssl rand -hex 32
 
 mkdir -p data && sudo chown 10001:10001 data && sudo chmod 700 data
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose logs --tail=50
 ```
+
+Compose pulls the public image `ghcr.io/dellarb/cloudflare_api_subdomain_bridge:latest`.
+To pin a release, set `BRIDGE_IMAGE_TAG` in `.env` to a version such as `1.2.3`
+(release tags are published both with and without the leading `v`). The SQLite
+ledger persists in `./data`; back it up together with `.env`.
 
 Compose publishes on **127.0.0.1:8080** by default. Front it with HTTPS or an
 authenticated private network — the listener itself is plaintext HTTP.
